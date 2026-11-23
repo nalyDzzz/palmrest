@@ -7,12 +7,9 @@ use std::time::Duration;
 use crate::aim::{Aim, AimParams};
 use crate::config::{Config, Layout, Mode};
 use crate::keys::Input;
-use crate::config::Action;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
-use crate::pad::{Button, PadState};
-use crate::vehicle::{Asked, VehicleCheck};
-use crate::vision::{Reading, Seen, Tracker};
+use crate::pad::PadState;
 use crate::win;
 
 /// Time between passes while playing.
@@ -23,8 +20,6 @@ const IDLE_TICK: f64 = 0.02;
 const FOREGROUND_EVERY: f64 = 0.05;
 /// An unchanged controller state is sent again this often.
 const RESEND_EVERY: f64 = 0.1;
-/// How often the game picture is looked at for the minimap.
-const WATCH_EVERY: f64 = 0.25;
 
 /// Everything sent to the engine: input events from the hooks, and requests from the window.
 #[derive(Debug)]
@@ -40,8 +35,6 @@ pub enum Msg {
     /// Hold the right stick at this tilt for a while, to find the game's dead zone.
     TestTilt { tilt: f32, seconds: f64 },
     ReconnectOutput,
-    /// The watcher's look at the minimap's border (`None`: the picture could not be read).
-    Minimap(Option<Reading>),
     Quit,
 }
 
@@ -65,10 +58,6 @@ pub struct Status {
     pub testing: bool,
     /// The keys and mouse buttons held right now, one bit per input.
     pub held: [u64; Input::COUNT.div_ceil(64)],
-    /// Whether the game's minimap is on screen, as far as the app can tell.
-    pub minimap: Seen,
-    /// The get-in key was pressed and the app is waiting for the minimap to confirm it.
-    pub waiting_for_vehicle: bool,
 }
 
 impl Status {
@@ -99,14 +88,10 @@ impl Engine {
             mouse_rate: 0.0,
             testing: false,
             held: [0; Input::COUNT.div_ceil(64)],
-            minimap: Seen::Unknown,
-            waiting_for_vehicle: false,
         }));
         win::start_input(tx.clone())?;
-        let watcher = win::start_watcher(tx.clone());
         let shared = status.clone();
-        let thread =
-            std::thread::Builder::new().name("engine".into()).spawn(move || run(rx, shared, cfg, layout, watcher)).map_err(|e| e.to_string())?;
+        let thread = std::thread::Builder::new().name("engine".into()).spawn(move || run(rx, shared, cfg, layout)).map_err(|e| e.to_string())?;
         Ok(Engine { tx, status, thread: Some(thread) })
     }
 
@@ -137,12 +122,7 @@ fn connect() -> Result<Box<dyn Output>, String> {
     VirtualDs4::connect().map(|d| Box::new(d) as Box<dyn Output>)
 }
 
-/// Buttons that open something which hides the minimap: pause, map, PS menu, capture, phone, weapon wheel.
-fn opens_a_menu(action: &Action) -> bool {
-    matches!(action, Action::Press(Button::Options | Button::Touchpad | Button::Ps | Button::Create | Button::DpadUp | Button::L1))
-}
-
-fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: Layout, watcher: std::sync::mpsc::SyncSender<(isize, crate::vision::Area)>) {
+fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: Layout) {
     win::fine_timers();
     let mut warnings = shared.lock().map(|s| s.warnings.clone()).unwrap_or_default();
     let mut mapper = Mapper::new(layout, cfg.steering.smooth);
@@ -154,9 +134,6 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
     let (mut next_foreground, mut next_status) = (0.0f64, 0.0f64);
     let mut last_sent: Option<(PadState, f64)> = None;
     let (mut mouse_reports, mut moving_since, mut mouse_rate) = (0u32, None::<f64>, 0.0f32);
-    let mut tracker = Tracker::default();
-    let mut check = VehicleCheck::new(cfg.vehicle_check.enabled);
-    let (mut game_window, mut next_watch) = (0isize, 0.0f64);
 
     'run: loop {
         // Full speed while playing, testing, or while the last state still has to be delivered.
@@ -182,35 +159,18 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                 Msg::Input { t, input, down } => {
                     // A release is always passed on, so a key held while focus was lost lets go.
                     if live || !down {
-                        if down && mapper.actions(input).iter().any(opens_a_menu) {
-                            check.menu_key(t);
-                        }
-                        if let Some(ask) = mapper.input(input, down, t) {
-                            // The get-in key waits for the minimap; everything else switches now.
-                            let how = if ask.with_button { Asked::ByActionKey } else { Asked::ByHand };
-                            if check.asked(t, ask.to, how) {
-                                mapper.set_mode(ask.to);
-                                mode_sound(&cfg, ask.to);
-                            }
+                        if let Some(mode) = mapper.input(input, down, t) {
+                            mode_sound(&cfg, mode);
                         }
                         urgent = true;
                     }
                 }
                 Msg::Wheel { t, input } => {
                     if live {
-                        if let Some(ask) = mapper.input(input, true, t) {
-                            let how = if ask.with_button { Asked::ByActionKey } else { Asked::ByHand };
-                            if check.asked(t, ask.to, how) {
-                                mapper.set_mode(ask.to);
-                                mode_sound(&cfg, ask.to);
-                            }
+                        if let Some(mode) = mapper.input(input, true, t) {
+                            mode_sound(&cfg, mode);
                         }
                         urgent = true;
-                    }
-                }
-                Msg::Minimap(reading) => {
-                    if live {
-                        check.minimap(win::now(), tracker.look(reading));
                     }
                 }
                 Msg::Toggle => {
@@ -231,12 +191,10 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                     let (layout, w) = Layout::compile(&cfg);
                     win::set_bound(&layout);
                     mapper.set_layout(layout, cfg.steering.smooth);
-                    check.set_enabled(cfg.vehicle_check.enabled);
                     warnings = w;
                     next_foreground = 0.0;
                 }
                 Msg::SetMode(mode) => {
-                    check.asked(win::now(), mode, Asked::ByHand);
                     mapper.set_mode(mode);
                     urgent = true;
                 }
@@ -273,25 +231,12 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                     mapper.release_all();
                     aim.reset();
                     win::release_cursor();
-                    // Not looking at the game any more: what the minimap is doing is unknown.
-                    tracker.reset();
-                    check.minimap(now, Seen::Unknown);
                 }
             }
-            game_window = if live { hwnd } else { 0 };
             win::set_live(live, armed || front);
             if live {
                 win::confine_cursor(hwnd); // again on every check: Windows drops the confinement easily
             }
-        }
-
-        if live && cfg.vehicle_check.enabled && now >= next_watch {
-            next_watch = now + WATCH_EVERY;
-            let _ = watcher.try_send((game_window, cfg.vehicle_check.minimap)); // dropped if it is still busy
-        }
-        if let Some(mode) = check.poll(now, mapper.mode()) {
-            mapper.set_mode(mode);
-            mode_sound(&cfg, mode);
         }
 
         let mut pad = PadState::default();
@@ -339,8 +284,6 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
                 s.held = if live { mapper.held_bits() } else { [0; Input::COUNT.div_ceil(64)] };
-                s.minimap = tracker.seen();
-                s.waiting_for_vehicle = check.waiting();
                 if s.warnings != warnings {
                     s.warnings = warnings.clone();
                 }

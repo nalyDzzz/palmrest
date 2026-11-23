@@ -11,7 +11,6 @@ use crate::config::{self, Action, Config, Mode};
 use crate::engine::{Engine, Msg, Status};
 use crate::keys::Input;
 use crate::pad::{Button, PadState};
-use crate::vision::Seen;
 
 // The window sits beside a game, so it stays dark and quiet. Colour is spent on two things only:
 // the state (the blue of a DualSense light bar while playing) and which controller button a key
@@ -580,35 +579,6 @@ impl App {
         });
     }
 
-    /// The minimap check: its switch, and what it sees right now so it can be trusted or not.
-    fn vehicle_check(&mut self, ui: &mut egui::Ui, status: &Status) {
-        ui.label(RichText::new("VEHICLE CHECK").font(self.font(13.0)).color(MUTED));
-        if ui.checkbox(&mut self.cfg.vehicle_check.enabled, "Wait for the minimap before switching to driving keys").changed() {
-            self.changed();
-        }
-        ui.label(
-            RichText::new(
-                "The get-in key switches to driving keys once the minimap appears, and the app goes back to on-foot keys when the minimap goes away. Needs the game's Minimap setting on Dynamic.",
-            )
-            .small()
-            .color(MUTED),
-        );
-        let (text, color) = if !self.cfg.vehicle_check.enabled {
-            ("Off: the get-in key switches at once.", MUTED)
-        } else if !status.live {
-            ("The game picture is only watched while playing.", MUTED)
-        } else if status.waiting_for_vehicle {
-            ("Get-in key pressed: waiting for the minimap.", READY)
-        } else {
-            match status.minimap {
-                Seen::Visible => ("Minimap: on screen.", LIVE),
-                Seen::Hidden => ("Minimap: not on screen.", TEXT),
-                Seen::Unknown => ("Can't read the game picture, so the get-in key switches at once.", READY),
-            }
-        };
-        ui.label(RichText::new(text).color(color));
-    }
-
     fn file_row(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui.button("Reset keys to defaults").clicked() {
@@ -741,8 +711,6 @@ impl eframe::App for App {
                 ui.add_space(4.0);
                 ui.columns(2, |columns| {
                     self.aim_settings(&mut columns[0]);
-                    columns[0].add_space(10.0);
-                    self.vehicle_check(&mut columns[0], &status);
                     let right = &mut columns[1];
                     self.controller(right, &status.pad);
                     if status.mouse_rate > 0.0 {
