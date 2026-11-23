@@ -501,7 +501,16 @@ impl App {
         });
         changed |= ui
             .checkbox(&mut self.cfg.triggers.wheel_dial, "Mouse wheel sets how far L2 and R2 are pulled")
-            .on_hover_text("For the few things in the game that want a trigger held part of the way or squeezed slowly. Wheel down: the trigger keys pull less, a tenth per notch. Wheel up: more. While a trigger key is held the wheel sets that trigger (the one pressed last if both are held), so the two can differ; with neither held it sets both, ahead of the press. The label on the game shows the pull while it is not all the way, and it goes back to all the way a few seconds after the keys are let go.")
+            .on_hover_text("For the few things in the game that want a trigger held part of the way, or lowered slowly. Wheel down: less pull. Wheel up: more. The wheel sets the triggers whose keys are held: one alone, so the two can differ, or both together. A held trigger comes down smoothly, however fast the wheel turns, and can go all the way down. With no trigger key held the wheel sets both, ahead of the press. The label on the game shows the pull while it is not all the way, and it goes back to all the way a few seconds after the keys are let go.")
+            .changed();
+        let dial = self.cfg.triggers.wheel_dial;
+        let t = &mut self.cfg.triggers;
+        let notch = egui::Slider::new(&mut t.step, 0.05..=0.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)).text("One wheel notch");
+        changed |= ui.add_enabled(dial, notch).on_hover_text("How much one notch of the wheel changes the pull. Larger: fewer notches from all the way to nothing.").changed();
+        let lowering = egui::Slider::new(&mut t.lower_seconds, 0.0..=4.0).step_by(0.1).suffix(" s").text("Lowering takes");
+        changed |= ui
+            .add_enabled(dial, lowering)
+            .on_hover_text("A held trigger that the wheel lowers takes this long from all the way to nothing, however fast the wheel is turned. For lifting weights: hold both triggers, spin the wheel down, and they come down this slowly. 0 for at once.")
             .changed();
         changed |= ui
             .checkbox(&mut self.cfg.switch_on_name_card, "Switch to driving keys when the vehicle's name appears (experimental)")

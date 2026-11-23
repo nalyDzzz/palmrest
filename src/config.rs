@@ -179,18 +179,30 @@ impl Default for AimConfig {
 #[serde(default)]
 pub struct TriggerConfig {
     /// The mouse wheel sets how far the trigger keys pull: down for less, up for more. It sets
-    /// the trigger whose key was pressed last while that key is held, and both when neither is.
+    /// the triggers whose keys are held, and both when neither is.
     pub wheel_dial: bool,
     /// How much one notch of the wheel changes the pull (0.1: ten steps from nothing to all the way).
     pub step: f32,
     /// The pull goes back to all the way this many seconds after the trigger keys were let go.
     pub reset_after: f32,
+    /// A held trigger that the wheel lowers comes down no faster than this: the seconds it
+    /// takes from all the way to nothing. However fast the wheel is turned, the trigger moves
+    /// smoothly, which is what lowering a weight slowly needs. 0 for at once.
+    pub lower_seconds: f32,
 }
 
 impl Default for TriggerConfig {
     fn default() -> Self {
-        TriggerConfig { wheel_dial: false, step: 0.1, reset_after: 3.0 }
+        TriggerConfig { wheel_dial: false, step: 0.1, reset_after: 3.0, lower_seconds: 1.5 }
     }
+}
+
+/// The wheel as the triggers' dial, as the mapper needs it (see `TriggerConfig`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dial {
+    pub step: f32,
+    pub reset_after: f32,
+    pub lower_seconds: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -480,9 +492,8 @@ pub struct Layout {
     drive: Vec<Vec<Action>>,
     pub toggle: Input,
     pub picture: Option<Input>,
-    /// The mouse wheel sets how far the trigger keys pull: the change per notch, and the
-    /// seconds after which the pull is all the way again. `None` if that is turned off.
-    pub dial: Option<(f32, f32)>,
+    /// The mouse wheel sets how far the trigger keys pull. `None` if that is turned off.
+    pub dial: Option<Dial>,
 }
 
 impl Layout {
@@ -525,7 +536,8 @@ impl Layout {
         };
         let foot = build("on foot", &cfg.keys.foot);
         let drive = build("driving", &cfg.keys.drive);
-        let dial = cfg.triggers.wheel_dial.then_some((cfg.triggers.step, cfg.triggers.reset_after));
+        let t = &cfg.triggers;
+        let dial = t.wheel_dial.then_some(Dial { step: t.step, reset_after: t.reset_after, lower_seconds: t.lower_seconds });
         (Layout { foot, drive, toggle, picture, dial }, warnings)
     }
 
@@ -667,6 +679,7 @@ impl Config {
         self.overlay.checks_per_second = finite(self.overlay.checks_per_second, 4.0).clamp(1.0, 30.0);
         self.triggers.step = finite(self.triggers.step, 0.1).clamp(0.02, 0.5);
         self.triggers.reset_after = finite(self.triggers.reset_after, 3.0).clamp(0.5, 60.0);
+        self.triggers.lower_seconds = finite(self.triggers.lower_seconds, 1.5).clamp(0.0, 10.0);
         for t in &mut self.targets {
             *t = t.trim().to_ascii_lowercase();
         }

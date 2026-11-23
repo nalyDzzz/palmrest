@@ -24,13 +24,14 @@ pub struct Mapper {
     stick_wanted: bool,
     /// The get-in key does not switch to the driving layout by itself: something else will.
     hold_get_in: bool,
-    /// How far the keys for L2 and R2 pull them, 0..1, as set with the wheel (see `turn_dial`).
+    /// How far the keys for L2 and R2 are to pull them, 0..1, as set with the wheel (see `turn_dial`).
     pull: [f32; 2],
+    /// How far L2 and R2 are pulled right now: on its way down to `pull` when the wheel has
+    /// just lowered that, since a held trigger comes down no faster than the settings allow.
+    travel: [f32; 2],
     /// When the dial was last turned or a trigger key last held: some time after, the pull is
     /// all the way again.
     pull_used: f64,
-    /// When a key for L2 and one for R2 last went down: the wheel sets the later one.
-    pulled_at: [f64; 2],
 }
 
 /// L2 and R2, in the order `pull` keeps them.
@@ -48,8 +49,8 @@ impl Mapper {
             stick_wanted: false,
             hold_get_in: false,
             pull: [1.0; 2],
+            travel: [1.0; 2],
             pull_used: 0.0,
-            pulled_at: [0.0; 2],
         }
     }
 
@@ -110,15 +111,7 @@ impl Mapper {
             return self.switch_for(input);
         }
         let was = std::mem::replace(&mut self.held[input.index()], down);
-        if down && !was {
-            for (i, trigger) in TRIGGERS.iter().enumerate() {
-                if self.doing(input).contains(&Action::Press(*trigger)) {
-                    self.pulled_at[i] = now;
-                }
-            }
-            return self.switch_for(input);
-        }
-        None
+        if down && !was { self.switch_for(input) } else { None }
     }
 
     /// Which of L2 and R2 have a key held for them right now.
@@ -132,29 +125,31 @@ impl Mapper {
         held
     }
 
-    /// One notch of the wheel as the triggers' dial: up for more pull, down for less, never
-    /// less than one notch's worth. It sets the trigger whose key is held (the one pressed last
-    /// if both are), so the two can be given different pulls; with neither held it sets both,
-    /// ahead of the press.
+    /// One notch of the wheel as the triggers' dial: up for more pull, down for less.
+    ///
+    /// It sets the triggers whose keys are held: one of them alone, so the two can be given
+    /// different pulls, or both together when both are held, as when a weight held up with both
+    /// has to come down slowly. A held trigger can be lowered all the way. With neither held the
+    /// wheel sets both ahead of the press, and then never to less than one notch's worth: a key
+    /// that did nothing at all would only be a puzzle.
     fn turn_dial(&mut self, up: bool, held: [bool; 2], now: f64) {
-        let Some((step, _)) = self.layout.dial else { return };
-        let which: &[usize] = match held {
-            [true, true] if self.pulled_at[0] > self.pulled_at[1] => &[0],
-            [true, true] | [false, true] => &[1],
-            [true, false] => &[0],
-            [false, false] => &[0, 1],
-        };
-        for &i in which {
-            let wanted = self.pull[i] + if up { step } else { -step };
-            // Whole notches, so that as many up as down ends where it began.
-            self.pull[i] = ((wanted / step).round() * step).clamp(step, 1.0);
+        let Some(dial) = self.layout.dial else { return };
+        for i in 0..2 {
+            if held[i] || held == [false, false] {
+                let wanted = self.pull[i] + if up { dial.step } else { -dial.step };
+                let least = if held[i] { 0.0 } else { dial.step };
+                // Whole notches, so that as many up as down ends where it began.
+                self.pull[i] = ((wanted / dial.step).round() * dial.step).clamp(least, 1.0);
+            }
         }
         self.pull_used = now;
     }
 
-    /// How far the keys for L2 and R2 pull them right now, 0..1.
+    /// How far the keys for L2 and R2 pull them right now, 0..1: where a held trigger is, and
+    /// where one that is not held would go to.
     pub fn pull(&self) -> [f32; 2] {
-        self.pull
+        let held = self.triggers_held();
+        [0, 1].map(|i| if held[i] { self.travel[i] } else { self.pull[i] })
     }
 
     fn switch_for(&mut self, input: Input) -> Option<Mode> {
@@ -229,14 +224,29 @@ impl Mapper {
         let pulled = [pad.pressed(Button::L2), pad.pressed(Button::R2)];
         match self.layout.dial {
             Some(_) if pulled != [false, false] => self.pull_used = now,
-            Some((_, reset_after)) if now - self.pull_used <= reset_after as f64 => {}
+            Some(dial) if now - self.pull_used <= dial.reset_after as f64 => {}
             _ => self.pull = [1.0; 2],
         }
-        if pulled[0] {
-            pad.l2 = self.pull[0];
-        }
-        if pulled[1] {
-            pad.r2 = self.pull[1];
+        let lower_seconds = self.layout.dial.map_or(0.0, |dial| dial.lower_seconds);
+        for (i, trigger) in TRIGGERS.into_iter().enumerate() {
+            if !pulled[i] {
+                // Let go of at the bottom: the next press is a whole pull again, a lift.
+                if self.pull[i] <= 0.0 {
+                    self.pull[i] = 1.0;
+                }
+                self.travel[i] = self.pull[i];
+                continue;
+            }
+            // Up at once, down no faster than allowed.
+            let lowering = self.travel[i] > self.pull[i] && lower_seconds > 0.0;
+            self.travel[i] = if lowering { (self.travel[i] - dt as f32 / lower_seconds).max(self.pull[i]) } else { self.pull[i] };
+            if self.travel[i] <= 0.0 {
+                pad.release(trigger); // all the way down is the same as not pressed
+            } else if trigger == Button::L2 {
+                pad.l2 = self.travel[i];
+            } else {
+                pad.r2 = self.travel[i];
+            }
         }
         lx = lx.clamp(-1.0, 1.0);
         ly = ly.clamp(-1.0, 1.0);
@@ -334,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_dial_sets_the_pull_ahead_of_a_press_and_during_it() {
-        let mut m = mapper_with_dial(|_| {});
+        let mut m = mapper_with_dial(|cfg| cfg.triggers.lower_seconds = 0.0);
         // Nothing held: both triggers, ahead of the press.
         for _ in 0..7 {
             m.input(Input::WHEEL_DOWN, true, 0.0);
@@ -344,30 +354,77 @@ mod tests {
         let p = m.state(0.1, 0.001, (0.0, 0.0));
         assert!(p.pressed(Button::R2) && (p.r2 - 0.3).abs() < 1e-5, "{}", p.r2);
         assert_eq!(p.l2, 0.0, "a trigger nobody presses stays up");
-        // While R2 is held the wheel squeezes R2 only.
+        // While R2 alone is held the wheel sets R2 only, so the two can differ.
         m.input(Input::WHEEL_UP, true, 0.2);
         m.input(Input::WHEEL_UP, true, 0.2);
+        m.state(0.2, 0.001, (0.0, 0.0));
         assert_eq!(tenths(&m), [3, 5]);
-        // Then L2 as well: it was pressed last, so the wheel is its dial now, and each keeps its own pull.
+        // With both held it moves both, each from where it is.
         m.input(Input::MOUSE_RIGHT, true, 0.3);
         m.input(Input::WHEEL_DOWN, true, 0.3);
-        assert_eq!(tenths(&m), [2, 5]);
         let p = m.state(0.3, 0.001, (0.0, 0.0));
-        assert!((p.l2 - 0.2).abs() < 1e-5 && (p.r2 - 0.5).abs() < 1e-5);
-        // Never below one notch, never above all the way.
-        for _ in 0..20 {
-            m.input(Input::WHEEL_DOWN, true, 0.4);
-        }
-        assert_eq!(tenths(&m), [1, 5]);
+        assert!((p.l2 - 0.2).abs() < 1e-5 && (p.r2 - 0.4).abs() < 1e-5, "{} {}", p.l2, p.r2);
+        // Never above all the way.
         for _ in 0..20 {
             m.input(Input::WHEEL_UP, true, 0.4);
         }
-        assert_eq!(tenths(&m), [10, 5]);
+        m.state(0.4, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [10, 10]);
+        // Ahead of a press it never goes below one notch.
+        m.input(Input::MOUSE_LEFT, false, 0.5);
+        m.input(Input::MOUSE_RIGHT, false, 0.5);
+        for _ in 0..20 {
+            m.input(Input::WHEEL_DOWN, true, 0.5);
+        }
+        assert_eq!(tenths(&m), [1, 1]);
+    }
+
+    #[test]
+    fn a_weight_held_with_both_triggers_comes_down_slowly_and_goes_up_at_once() {
+        // The default: from all the way to nothing takes a second and a half.
+        let mut m = mapper_with_dial(|_| {});
+        m.input(Input::MOUSE_LEFT, true, 0.0);
+        m.input(Input::MOUSE_RIGHT, true, 0.0);
+        let p = m.state(0.0, 0.001, (0.0, 0.0));
+        assert_eq!((p.l2, p.r2), (1.0, 1.0), "lifted");
+        // The wheel is spun down in one go, far more than ten notches.
+        for _ in 0..25 {
+            m.input(Input::WHEEL_DOWN, true, 0.0);
+        }
+        // The triggers follow together, smoothly, however fast the wheel went.
+        let mut last = 1.0f32;
+        for tick in 1..=1400 {
+            let p = m.state(tick as f64 * 0.001, 0.001, (0.0, 0.0));
+            assert_eq!(p.l2, p.r2);
+            assert!(p.l2 <= last && last - p.l2 < 0.002, "a jump at {tick} ms: {last} -> {}", p.l2);
+            last = p.l2;
+        }
+        assert!((last - 1.0 / 15.0).abs() < 0.01, "after 1.4 s of 1.5 it is nearly down: {last}");
+        let p = m.state(1.6, 0.2, (0.0, 0.0));
+        assert!(!p.pressed(Button::L2) && !p.pressed(Button::R2) && (p.l2, p.r2) == (0.0, 0.0), "all the way down is let go, with the keys still held");
+        // Up again with the wheel, at once...
+        for _ in 0..25 {
+            m.input(Input::WHEEL_UP, true, 1.7);
+        }
+        let p = m.state(1.7, 0.001, (0.0, 0.0));
+        assert_eq!((p.l2, p.r2), (1.0, 1.0));
+        // ...or, from the bottom, by letting go and pressing again: that is a whole pull.
+        for _ in 0..25 {
+            m.input(Input::WHEEL_DOWN, true, 1.8);
+        }
+        m.state(4.0, 2.2, (0.0, 0.0));
+        m.input(Input::MOUSE_LEFT, false, 4.0);
+        m.input(Input::MOUSE_RIGHT, false, 4.0);
+        m.state(4.01, 0.01, (0.0, 0.0));
+        m.input(Input::MOUSE_LEFT, true, 4.1);
+        m.input(Input::MOUSE_RIGHT, true, 4.1);
+        let p = m.state(4.1, 0.001, (0.0, 0.0));
+        assert_eq!((p.l2, p.r2), (1.0, 1.0));
     }
 
     #[test]
     fn the_pull_is_all_the_way_again_a_while_after_the_triggers_are_let_go() {
-        let mut m = mapper_with_dial(|_| {});
+        let mut m = mapper_with_dial(|cfg| cfg.triggers.lower_seconds = 0.0);
         m.input(Input::WHEEL_DOWN, true, 0.0);
         m.input(Input::MOUSE_LEFT, true, 1.0);
         assert!((m.state(50.0, 0.001, (0.0, 0.0)).r2 - 0.9).abs() < 1e-5, "it stays for as long as the key is held");
@@ -393,9 +450,10 @@ mod tests {
         m.input(Input::WHEEL_UP, true, 0.0);
         assert_eq!(tenths(&m), [10, 10], "already all the way");
         m.input(Input::MOUSE_LEFT, true, 1.0);
+        m.state(1.0, 0.001, (0.0, 0.0));
         m.input(Input::WHEEL_DOWN, true, 1.0);
-        assert_eq!(tenths(&m), [10, 9]);
-        assert!(!m.state(1.01, 0.001, (0.0, 0.0)).pressed(Button::DpadDown));
+        let p = m.state(2.0, 1.0, (0.0, 0.0));
+        assert!((p.r2 - 0.9).abs() < 1e-5 && !p.pressed(Button::DpadDown), "{}", p.r2);
     }
 
     #[test]

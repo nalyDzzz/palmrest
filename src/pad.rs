@@ -120,6 +120,16 @@ impl PadState {
         self.buttons & b.bit() != 0
     }
 
+    /// Lets go of a button again (a trigger lowered all the way, say).
+    pub fn release(&mut self, b: Button) {
+        self.buttons &= !b.bit();
+        match b {
+            Button::L2 => self.l2 = 0.0,
+            Button::R2 => self.r2 = 0.0,
+            _ => {}
+        }
+    }
+
     pub fn press(&mut self, b: Button) {
         self.buttons |= b.bit();
         match b {
