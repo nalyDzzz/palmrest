@@ -43,9 +43,18 @@ pub enum Msg {
     SavePicture,
     /// A picture was saved (its path), or could not be (why).
     PictureSaved(Result<String, String>),
-    /// The button prompts found in the game picture (`None`: the picture could not be read).
-    Prompts(Option<Vec<Glyph>>),
+    /// What one look at the game picture found (`None`: the picture could not be read).
+    Look(Option<Look>),
     Quit,
+}
+
+/// What one look at the game picture found.
+#[derive(Debug)]
+pub struct Look {
+    /// The button prompts on screen.
+    pub prompts: Vec<Glyph>,
+    /// The vehicle name card is showing.
+    pub name_card: bool,
 }
 
 /// What the window shows.
@@ -191,6 +200,9 @@ fn run(
     let mut game_window = 0isize;
     let (mut picture, mut pictures_saved) = (None::<Result<String, String>>, 0u32);
     let (mut prompts, mut next_look) = (Steady::default(), 0.0f64);
+    // The name card: looks in a row that saw it, and whether it counts as showing.
+    let (mut card_looks, mut card_showing) = (0u8, false);
+    mapper.set_hold_get_in(cfg.switch_on_name_card);
 
     'run: loop {
         // Full speed while playing, testing, or while the last state still has to be delivered.
@@ -248,6 +260,7 @@ fn run(
                     let (layout, w) = Layout::compile(&cfg);
                     win::set_bound(&layout);
                     mapper.set_layout(layout, cfg.steering.smooth);
+                    mapper.set_hold_get_in(cfg.switch_on_name_card);
                     warnings = w;
                     next_foreground = 0.0;
                 }
@@ -278,10 +291,20 @@ fn run(
                         });
                     }
                 }
-                Msg::Prompts(found) => {
+                Msg::Look(look) => {
                     // A look that could not read the picture says nothing either way.
-                    if let (true, Some(found)) = (live, found) {
-                        prompts.look(&found);
+                    if let (true, Some(look)) = (live, look) {
+                        prompts.look(&look.prompts);
+                        // Hot-wiring and the like: while the game shows the left stick, give it the stick.
+                        mapper.set_stick_wanted(prompts.shown().contains(&Glyph::LeftStick));
+                        // The card counts as showing after two looks in a row, and acts once, when it appears.
+                        card_looks = if look.name_card { card_looks.saturating_add(1) } else { 0 };
+                        let showing = card_looks >= 2;
+                        if showing && !card_showing && cfg.switch_on_name_card && mapper.mode() == Mode::Foot {
+                            mapper.set_mode(Mode::Drive);
+                            mode_sound(&cfg, Mode::Drive);
+                        }
+                        card_showing = showing;
                     }
                 }
                 Msg::PictureSaved(result) => {
@@ -313,6 +336,8 @@ fn run(
                     aim.reset();
                     win::release_cursor();
                     prompts.clear();
+                    mapper.set_stick_wanted(false);
+                    (card_looks, card_showing) = (0, false);
                 }
             }
             game_window = if live { hwnd } else { 0 };
@@ -322,13 +347,15 @@ fn run(
             }
         }
 
+        // The picture is looked at for prompt hints, and for the name card if that switches layout.
         let hints = cfg.overlay.enabled && cfg.overlay.prompts;
-        if live && hints && now >= next_look {
+        if live && (hints || cfg.switch_on_name_card) && now >= next_look {
             next_look = now + LOOK_EVERY;
             let _ = looker.try_send(game_window); // dropped if the last look is still running
         }
         if !hints {
             prompts.clear();
+            mapper.set_stick_wanted(false);
         }
 
         let mut pad = PadState::default();

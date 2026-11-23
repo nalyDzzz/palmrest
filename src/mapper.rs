@@ -19,11 +19,16 @@ pub struct Mapper {
     pulses: Vec<(Input, f64)>,
     smooth_steering: bool,
     steer: f32,
+    /// The game is asking for the left stick: keys that are the left stick on foot are the left
+    /// stick now, whatever the layout says. This is what makes hot-wiring work on driving keys.
+    stick_wanted: bool,
+    /// The get-in key does not switch to the driving layout by itself: something else will.
+    hold_get_in: bool,
 }
 
 impl Mapper {
     pub fn new(layout: Layout, smooth_steering: bool) -> Mapper {
-        Mapper { layout, mode: Mode::Foot, held: vec![false; Input::COUNT], pulses: Vec::new(), smooth_steering, steer: 0.0 }
+        Mapper { layout, mode: Mode::Foot, held: vec![false; Input::COUNT], pulses: Vec::new(), smooth_steering, steer: 0.0, stick_wanted: false, hold_get_in: false }
     }
 
     /// Swaps in new layouts. Keys that are held stay held.
@@ -38,6 +43,30 @@ impl Mapper {
 
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
+    }
+
+    /// Whether the game is asking for the left stick right now (see `stick_wanted`).
+    pub fn set_stick_wanted(&mut self, wanted: bool) {
+        self.stick_wanted = wanted;
+    }
+
+    /// Whether a key that gets into a vehicle should leave the switch to driving keys to
+    /// something else (the vehicle's name appearing). Getting out, and keys that only switch
+    /// layout, are not affected.
+    pub fn set_hold_get_in(&mut self, hold: bool) {
+        self.hold_get_in = hold;
+    }
+
+    /// What an input does right now: its actions in the layout in use, or, while the game asks
+    /// for the left stick, its on-foot actions if those are the left stick.
+    fn doing(&self, input: Input) -> &[Action] {
+        if self.stick_wanted && self.mode == Mode::Drive {
+            let on_foot = self.layout.actions(Mode::Foot, input);
+            if on_foot.iter().any(|a| matches!(a, Action::LsUp | Action::LsDown | Action::LsLeft | Action::LsRight)) {
+                return on_foot;
+            }
+        }
+        self.layout.actions(self.mode, input)
     }
 
     /// A key or mouse button went down or up, or the wheel turned a notch (`down` is ignored for
@@ -58,15 +87,23 @@ impl Mapper {
     fn switch_for(&mut self, input: Input) -> Option<Mode> {
         let before = self.mode;
         // Read the actions of the layout in use when the key went down: one press, one switch.
-        for act in self.layout.actions(before, input).to_vec() {
+        let actions = self.layout.actions(before, input).to_vec();
+        let mut to = before;
+        for act in &actions {
             match act {
-                Action::ModeToggle => self.mode = before.other(),
-                Action::ModeFoot => self.mode = Mode::Foot,
-                Action::ModeDrive => self.mode = Mode::Drive,
+                Action::ModeToggle => to = before.other(),
+                Action::ModeFoot => to = Mode::Foot,
+                Action::ModeDrive => to = Mode::Drive,
                 _ => {}
             }
         }
-        (self.mode != before).then_some(self.mode)
+        // A key that also presses a button is the get-in key when it would switch to driving.
+        let gets_in = to == Mode::Drive && actions.iter().any(|a| !a.switches_layout());
+        if self.hold_get_in && gets_in {
+            return None;
+        }
+        self.mode = to;
+        (to != before).then_some(to)
     }
 
     /// The keys and buttons held right now, one bit per input.
@@ -103,7 +140,7 @@ impl Mapper {
         let (mut lx, mut ly) = (0.0f32, 0.0f32);
         let held = (0..Input::COUNT).filter(|&i| self.held[i]).map(|i| Input(i as u16));
         for input in held.chain(self.pulses.iter().map(|p| p.0)) {
-            for act in self.layout.actions(self.mode, input) {
+            for act in self.doing(input) {
                 match act {
                     Action::Press(b) => pad.press(*b),
                     Action::LsUp => ly += 1.0,
@@ -199,6 +236,41 @@ mod tests {
         m.input(key("F"), false, 0.0);
         assert_eq!(m.input(key("F"), true, 0.0), Some(Mode::Foot));
         assert_eq!(m.input(key("CapsLock"), true, 0.0), Some(Mode::Drive));
+    }
+
+    #[test]
+    fn when_the_game_asks_for_the_left_stick_the_driving_keys_give_it() {
+        let mut m = mapper();
+        m.set_mode(Mode::Drive);
+        m.input(key("W"), true, 0.0);
+        m.input(key("S"), true, 0.0);
+        let p = m.state(0.0, 0.001, (0.0, 0.0));
+        assert!(p.pressed(Button::R2) && p.pressed(Button::L2), "driving: W and S are throttle and brake");
+        m.input(key("S"), false, 0.0);
+        m.set_stick_wanted(true);
+        m.input(key("Space"), true, 0.0);
+        let p = m.state(0.0, 0.001, (0.0, 0.0));
+        assert!(!p.pressed(Button::R2), "hot-wiring: W is the stick, not the throttle");
+        assert_eq!(p.ly, 1.0);
+        assert!(p.pressed(Button::Cross), "keys that are not the stick on foot keep their driving job");
+        m.set_stick_wanted(false);
+        assert!(m.state(0.0, 0.001, (0.0, 0.0)).pressed(Button::R2), "prompt gone: W is the throttle again");
+        // On foot nothing changes either way.
+        m.set_mode(Mode::Foot);
+        m.set_stick_wanted(true);
+        assert_eq!(m.state(0.0, 0.001, (0.0, 0.0)).ly, 1.0);
+    }
+
+    #[test]
+    fn the_get_in_key_can_leave_the_switch_to_something_else() {
+        let mut m = mapper();
+        m.set_hold_get_in(true);
+        assert_eq!(m.input(key("F"), true, 0.0), None, "getting in: no switch yet");
+        assert_eq!(m.mode(), Mode::Foot);
+        assert!(m.state(0.0, 0.001, (0.0, 0.0)).pressed(Button::Triangle), "the key still presses its button");
+        m.input(key("F"), false, 0.0);
+        assert_eq!(m.input(key("CapsLock"), true, 0.0), Some(Mode::Drive), "switching by hand still works");
+        assert_eq!(m.input(key("F"), true, 0.0), Some(Mode::Foot), "getting out switches at once");
     }
 
     #[test]

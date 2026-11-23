@@ -264,6 +264,9 @@ pub struct Config {
     pub game_fps: f32,
     /// Beep when the layout switches or the takeover turns on or off.
     pub sounds: bool,
+    /// Switch to the driving layout when the vehicle's name card appears on screen, and not when
+    /// the get-in key is pressed. Getting out still switches at once.
+    pub switch_on_name_card: bool,
     pub aim: AimConfig,
     pub steering: SteeringConfig,
     pub overlay: OverlayConfig,
@@ -279,6 +282,7 @@ impl Default for Config {
             targets: ["veyra_qml_ui.exe", "chiaki-ng.exe", "chiaki.exe", "remoteplay.exe"].map(String::from).to_vec(),
             game_fps: 30.0,
             sounds: true,
+            switch_on_name_card: false,
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
             overlay: OverlayConfig::default(),

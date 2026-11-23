@@ -524,6 +524,10 @@ impl App {
             ui.add_space(12.0);
             changed |= ui.checkbox(&mut self.cfg.sounds, "Beep when switching").changed();
         });
+        changed |= ui
+            .checkbox(&mut self.cfg.switch_on_name_card, "Switch to driving keys when the vehicle's name appears (experimental)")
+            .on_hover_text("The get-in key then only gets in. The switch happens when the game shows the vehicle's name above the minimap. Getting out and Caps Lock work as before.")
+            .changed();
         changed |= ui.checkbox(&mut self.cfg.overlay.enabled, "Show the layout in use on top of the game").changed();
         changed |= ui
             .add_enabled(self.cfg.overlay.enabled, egui::Checkbox::new(&mut self.cfg.overlay.prompts, "Show my key for button prompts the game puts on screen"))

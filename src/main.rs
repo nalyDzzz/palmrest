@@ -64,11 +64,12 @@ fn main() {
         let started = std::time::Instant::now();
         while started.elapsed() < std::time::Duration::from_secs(4) {
             let _ = looker.try_send(hwnd);
-            if let Ok(engine::Msg::Prompts(Some(found))) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            if let Ok(engine::Msg::Look(Some(look))) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                let found = look.prompts;
                 steady.look(&found);
                 let shown: Vec<_> =
                     steady.shown().into_iter().filter_map(|g| engine::keys_shown(&cfg, config::Mode::Foot, g).map(|k| (g, k))).collect();
-                println!("found {found:?} -> showing {shown:?}");
+                println!("found {found:?} name card {} -> showing {shown:?}", look.name_card);
                 if let Ok(mut s) = state.lock() {
                     s.prompts = shown;
                 }
