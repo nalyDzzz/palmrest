@@ -31,9 +31,10 @@ How the picture reaches your screen is up to you: the Remote Play stream itself,
 ## Getting started
 
 1. Install ViGEmBus and restart if it asks.
-2. Start `palmrest.exe`, then your Remote Play client, and connect to the console.
-3. Click into the game's window and press **F10**. From now on the keyboard and mouse are the controller. **F10** again gives them back; so does switching to another window with Alt+Tab.
-4. In the Palmrest window, under *Aim*, set the mouse speed to taste. If small mouse movements do nothing, or tiny ones jump, use *Find the game's dead zone* on the right.
+2. Download `palmrest.exe` from the [latest release](https://github.com/nalyDzzz/palmrest/releases/latest) and put it wherever you like. There is nothing to install. The exe is not signed, so Windows may say it comes from an unknown publisher: *More info*, then *Run anyway*. You can also [build it yourself](#building-it).
+3. Start `palmrest.exe`, then your Remote Play client, and connect to the console.
+4. Click into the game's window and press **F10**. From now on the keyboard and mouse are the controller. **F10** again gives them back; so does switching to another window with Alt+Tab.
+5. In the Palmrest window, under *Aim*, set the mouse speed to taste. If small mouse movements do nothing, or tiny ones jump, use *Find the game's dead zone* on the right.
 
 Palmrest only takes keys while it is switched on **and** the game's window is in front. Everywhere else your keyboard and mouse are untouched.
 
