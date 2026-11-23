@@ -259,7 +259,7 @@ pub fn start_input(tx: Sender<Msg>) -> Result<(), String> {
                         cbSize: size_of::<WNDCLASSEXW>() as u32,
                         lpfnWndProc: Some(raw_input_proc),
                         hInstance: instance.into(),
-                        lpszClassName: w!("Ps5RemoteSimRawInput"),
+                        lpszClassName: w!("PalmrestRawInput"),
                         ..Default::default()
                     };
                     if RegisterClassExW(&class) == 0 {
@@ -267,7 +267,7 @@ pub fn start_input(tx: Sender<Msg>) -> Result<(), String> {
                     }
                     let window = CreateWindowExW(
                         WINDOW_EX_STYLE(0),
-                        w!("Ps5RemoteSimRawInput"),
+                        w!("PalmrestRawInput"),
                         w!("input"),
                         WINDOW_STYLE(0),
                         0,

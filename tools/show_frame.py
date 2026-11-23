@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "debug", "ps5-remote-sim.exe")
+EXE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "debug", "palmrest.exe")
 
 
 def side_monitor():

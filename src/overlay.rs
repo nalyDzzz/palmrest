@@ -111,7 +111,7 @@ pub fn start(state: Arc<Mutex<OverlayState>>) -> Result<(), String> {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
                 lpfnWndProc: Some(window_proc),
                 hInstance: instance.into(),
-                lpszClassName: w!("Ps5RemoteSimOverlay"),
+                lpszClassName: w!("PalmrestOverlay"),
                 ..Default::default()
             };
             if RegisterClassExW(&class) == 0 {
@@ -120,14 +120,14 @@ pub fn start(state: Arc<Mutex<OverlayState>>) -> Result<(), String> {
             // Layered: per-pixel see-through. Transparent: clicks go to whatever is underneath.
             // No-activate and tool window: never takes the keyboard, no taskbar entry.
             let style = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
-            let Ok(window) = CreateWindowExW(style, w!("Ps5RemoteSimOverlay"), w!(""), WS_POPUP, 0, 0, 1, 1, None, None, Some(instance.into()), None)
+            let Ok(window) = CreateWindowExW(style, w!("PalmrestOverlay"), w!(""), WS_POPUP, 0, 0, 1, 1, None, None, Some(instance.into()), None)
             else {
                 return;
             };
             // One small window per on-prompt hint, same kind as the label.
             if let Ok(mut pool) = SPOT_WINDOWS.lock() {
                 for _ in 0..SPOTS {
-                    if let Ok(spot) = CreateWindowExW(style, w!("Ps5RemoteSimOverlay"), w!(""), WS_POPUP, 0, 0, 1, 1, None, None, Some(instance.into()), None) {
+                    if let Ok(spot) = CreateWindowExW(style, w!("PalmrestOverlay"), w!(""), WS_POPUP, 0, 0, 1, 1, None, None, Some(instance.into()), None) {
                         pool.push((spot.0 as isize, None));
                     }
                 }

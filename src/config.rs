@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::keys::Input;
 use crate::pad::Button;
 
-pub const APP_NAME: &str = "ps5-remote-sim";
+/// The program's name: also the name of its folder for settings and saved pictures.
+pub const APP_NAME: &str = "Palmrest";
 
 /// Which key layout is in use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,7 +349,10 @@ pub struct Config {
     pub picture_key: String,
     /// Programs that show the game. The takeover only happens while one of them is in front.
     pub targets: Vec<String>,
-    /// Frames per second of the game on the console (30 for GTA 6 on PS5).
+    /// Frames per second the game really runs at on the console: 30 for GTA 6 on PS5. The game
+    /// reads the stick once per frame, and mouse movement is gathered over one frame. Frames
+    /// made up afterwards on the PC (frame generation) do not count. Only in this file: there
+    /// is nothing to choose while the game has one frame rate.
     pub game_fps: f32,
     /// Beep when the layout switches or the takeover turns on or off.
     pub sounds: bool,

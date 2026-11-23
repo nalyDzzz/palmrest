@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-TITLE = "PS5 Remote Sim"
+TITLE = "Palmrest"
 u32 = ctypes.windll.user32
 u32.FindWindowW.restype = wt.HWND
 

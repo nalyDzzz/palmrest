@@ -1040,7 +1040,7 @@ mod tests {
     fn real_frames_name_card() {
         let with_card = ["1795461508_driving", "1123_100027_should_be_drive"];
         let (mut frames, mut wrong) = (0, 0);
-        for dir in std::env::var("PS5RS_FRAMES").expect("set PS5RS_FRAMES").split(';') {
+        for dir in std::env::var("PALMREST_FRAMES").expect("set PALMREST_FRAMES").split(';') {
             for entry in std::fs::read_dir(dir).unwrap().flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("png") {
@@ -1091,7 +1091,7 @@ mod tests {
         assert!(!name_card(&[0u8; 30], 4, 2));
     }
 
-    /// Checks the detector against real frames, if they are on this machine. Set PS5RS_FRAMES to
+    /// Checks the detector against real frames, if they are on this machine. Set PALMREST_FRAMES to
     /// one or more folders (separated by `;`) and run with `-- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -1133,7 +1133,7 @@ mod tests {
             ("1795467907_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]), // with a weapon's card; "Drop" is dimmed
             ("1795467968_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]),
         ];
-        let dirs = std::env::var("PS5RS_FRAMES").expect("set PS5RS_FRAMES");
+        let dirs = std::env::var("PALMREST_FRAMES").expect("set PALMREST_FRAMES");
         let (mut frames, mut slowest, mut wrong) = (0, 0.0f64, 0u32);
         for dir in dirs.split(';') {
             for entry in std::fs::read_dir(dir).unwrap().flatten() {

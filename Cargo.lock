@@ -2248,6 +2248,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "palmrest"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "png",
+ "serde",
+ "toml",
+ "vigem-client",
+ "windows",
+ "winresource",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2482,18 +2495,6 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
-
-[[package]]
-name = "ps5-remote-sim"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "png",
- "serde",
- "toml",
- "vigem-client",
- "windows",
-]
 
 [[package]]
 name = "pxfm"
@@ -4014,6 +4015,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "toml",
+ "version_check",
 ]
 
 [[package]]

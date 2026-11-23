@@ -568,17 +568,7 @@ impl App {
         slider(ui, &mut a.deadzone, 0.0..=0.6, "Dead zone", "The part of the stick the game ignores. Too high: tiny movements jump. Too low: they do nothing.");
         slider(ui, &mut a.curve, 1.0..=3.0, "Response curve", "Undoes the game's stick curve. 1 is off. Higher makes slow movements turn more.");
         slider(ui, &mut a.smoothing, 0.0..=2.0, "Smoothing", "1 is normal. Lower reacts faster, higher is steadier.");
-        ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut a.invert_y, "Invert up/down").changed();
-            ui.add_space(12.0);
-            ui.label("Game runs at");
-            for fps in [30.0, 60.0] {
-                if ui.selectable_label(self.cfg.game_fps == fps, format!("{fps} fps")).clicked() {
-                    self.cfg.game_fps = fps;
-                    changed = true;
-                }
-            }
-        });
+        changed |= ui.checkbox(&mut a.invert_y, "Invert up/down").changed();
         changed
     }
 

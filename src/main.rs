@@ -16,7 +16,7 @@ mod win;
 
 use eframe::egui;
 
-const TITLE: &str = "PS5 Remote Sim";
+const TITLE: &str = "Palmrest";
 
 fn main() {
     if std::env::args().any(|a| a == "--pad-test") {
@@ -135,6 +135,9 @@ fn main() {
         Err(error) => return fatal(&format!("Could not start reading the keyboard and mouse: {error}")),
     };
     let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1280.0, 860.0]).with_min_inner_size([820.0, 520.0]);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     // Test aids: `--no-focus` opens the window without taking the keyboard, `--at x,y` places it,
     // `--layout drive` starts on the driving layout, `--select F` opens with that key's editor showing,
     // `--group triggers` with that group of settings showing.
@@ -170,6 +173,18 @@ fn main() {
     if args.iter().any(|a| a == "--count-mouse") {
         println!("mouse reports seen: {}", win::MOUSE_REPORTS.load(std::sync::atomic::Ordering::Relaxed));
     }
+}
+
+/// The icon for the window's corner and the task bar, from the picture built into the program.
+fn window_icon() -> Option<egui::IconData> {
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(&include_bytes!("../assets/palmrest-256.png")[..]));
+    decoder.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = decoder.read_info().ok()?;
+    let mut pixels = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut pixels).ok()?;
+    let samples = info.color_type.samples();
+    let rgba = pixels[..info.width as usize * info.height as usize * samples].chunks(samples).flat_map(|p| [p[0], p[1], p[2], if samples == 4 { p[3] } else { 255 }]).collect();
+    Some(egui::IconData { rgba, width: info.width, height: info.height })
 }
 
 /// A message box, because a release build has no console to print to.

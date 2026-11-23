@@ -3,7 +3,7 @@
 Starts `<exe> --pad-test`, which steps through every control and prints each step's name, and
 reads the controller through SDL (pygame) the way a game or Remote Play program would.
 
-usage: python pad_readback.py <path to ps5-remote-sim.exe>
+usage: python pad_readback.py <path to palmrest.exe>
 """
 import os
 import subprocess
