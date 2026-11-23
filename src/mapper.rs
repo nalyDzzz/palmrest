@@ -69,6 +69,18 @@ impl Mapper {
         (self.mode != before).then_some(self.mode)
     }
 
+    /// The keys and buttons held right now, one bit per input.
+    pub fn held_bits(&self) -> [u64; Input::COUNT.div_ceil(64)] {
+        let mut bits = [0u64; Input::COUNT.div_ceil(64)];
+        for (i, _) in self.held.iter().enumerate().filter(|(_, h)| **h) {
+            bits[i / 64] |= 1 << (i % 64);
+        }
+        for (input, _) in &self.pulses {
+            bits[input.index() / 64] |= 1 << (input.index() % 64);
+        }
+        bits
+    }
+
     /// Lets go of everything, as when the game window loses focus.
     pub fn release_all(&mut self) {
         self.held.iter_mut().for_each(|h| *h = false);

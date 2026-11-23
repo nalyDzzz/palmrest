@@ -56,6 +56,14 @@ pub struct Status {
     /// Mouse reports per second while moving, for the user's information.
     pub mouse_rate: f32,
     pub testing: bool,
+    /// The keys and mouse buttons held right now, one bit per input.
+    pub held: [u64; Input::COUNT.div_ceil(64)],
+}
+
+impl Status {
+    pub fn is_held(&self, input: Input) -> bool {
+        self.held.get(input.index() / 64).is_some_and(|w| w >> (input.index() % 64) & 1 == 1)
+    }
 }
 
 pub struct Engine {
@@ -79,6 +87,7 @@ impl Engine {
             warnings,
             mouse_rate: 0.0,
             testing: false,
+            held: [0; Input::COUNT.div_ceil(64)],
         }));
         win::start_input(tx.clone())?;
         let shared = status.clone();
@@ -274,6 +283,7 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                 s.output_error = output.as_ref().err().cloned();
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
+                s.held = if live { mapper.held_bits() } else { [0; Input::COUNT.div_ceil(64)] };
                 if s.warnings != warnings {
                     s.warnings = warnings.clone();
                 }

@@ -29,9 +29,15 @@ fn main() {
         Ok(engine) => engine,
         Err(error) => return fatal(&format!("Could not start reading the keyboard and mouse: {error}")),
     };
-    let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([780.0, 760.0]).with_min_inner_size([620.0, 420.0]);
-    // Test aids: `--no-focus` opens the window without taking the keyboard, `--at x,y` places it.
+    let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1280.0, 860.0]).with_min_inner_size([820.0, 520.0]);
+    // Test aids: `--no-focus` opens the window without taking the keyboard, `--at x,y` places it,
+    // `--layout drive` starts on the driving layout, `--select F` opens with that key's editor showing.
     let args: Vec<String> = std::env::args().collect();
+    let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    if after("--layout").as_deref() == Some("drive") {
+        engine.send(engine::Msg::SetMode(config::Mode::Drive));
+    }
+    let select = after("--select").and_then(|name| keys::Input::from_name(&name));
     if args.iter().any(|a| a == "--no-focus") {
         viewport = viewport.with_active(false);
     }
@@ -42,8 +48,12 @@ fn main() {
         }
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    let app = ui::App::new(engine, cfg, path, load_error);
-    if let Err(error) = eframe::run_native(TITLE, options, Box::new(move |_| Ok(Box::new(app)))) {
+    let created = Box::new(move |cc: &eframe::CreationContext<'_>| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut app = ui::App::new(cc, engine, cfg, path, load_error);
+        app.select(select);
+        Ok(Box::new(app))
+    });
+    if let Err(error) = eframe::run_native(TITLE, options, created) {
         fatal(&format!("Could not open the window: {error}"));
     }
     // Test aid: how many mouse movement reports reached us while the window was open.

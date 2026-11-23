@@ -61,6 +61,52 @@ impl Action {
         })
     }
 
+    /// The name used in the config file.
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::Press(b) => b.name(),
+            Action::LsUp => "ls_up",
+            Action::LsDown => "ls_down",
+            Action::LsLeft => "ls_left",
+            Action::LsRight => "ls_right",
+            Action::ModeToggle => "mode_toggle",
+            Action::ModeFoot => "mode_foot",
+            Action::ModeDrive => "mode_drive",
+        }
+    }
+
+    pub const ALL: [Action; 25] = [
+        Action::Press(Button::Cross),
+        Action::Press(Button::Circle),
+        Action::Press(Button::Square),
+        Action::Press(Button::Triangle),
+        Action::Press(Button::L1),
+        Action::Press(Button::R1),
+        Action::Press(Button::L2),
+        Action::Press(Button::R2),
+        Action::Press(Button::L3),
+        Action::Press(Button::R3),
+        Action::Press(Button::DpadUp),
+        Action::Press(Button::DpadDown),
+        Action::Press(Button::DpadLeft),
+        Action::Press(Button::DpadRight),
+        Action::LsUp,
+        Action::LsDown,
+        Action::LsLeft,
+        Action::LsRight,
+        Action::Press(Button::Options),
+        Action::Press(Button::Create),
+        Action::Press(Button::Touchpad),
+        Action::Press(Button::Ps),
+        Action::ModeToggle,
+        Action::ModeFoot,
+        Action::ModeDrive,
+    ];
+
+    pub fn switches_layout(self) -> bool {
+        matches!(self, Action::ModeToggle | Action::ModeFoot | Action::ModeDrive)
+    }
+
     /// How the action reads in the window.
     pub fn label(self) -> &'static str {
         match self {
@@ -147,6 +193,49 @@ pub struct Keys {
     pub drive: Bindings,
 }
 
+/// What each action does in the game, in the game's own words, per layout: `cross = "Jump"`.
+/// A key with several actions can have its own entry: `"triangle+mode_toggle" = "Get in"`.
+pub type Names = BTreeMap<String, String>;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Labels {
+    pub foot: Names,
+    pub drive: Names,
+}
+
+impl Keys {
+    pub fn of(&self, mode: Mode) -> &Bindings {
+        match mode {
+            Mode::Foot => &self.foot,
+            Mode::Drive => &self.drive,
+        }
+    }
+
+    pub fn of_mut(&mut self, mode: Mode) -> &mut Bindings {
+        match mode {
+            Mode::Foot => &mut self.foot,
+            Mode::Drive => &mut self.drive,
+        }
+    }
+}
+
+impl Labels {
+    pub fn of(&self, mode: Mode) -> &Names {
+        match mode {
+            Mode::Foot => &self.foot,
+            Mode::Drive => &self.drive,
+        }
+    }
+
+    /// The game's word for what these actions do together, or for the first of them that has one.
+    pub fn describe(&self, mode: Mode, actions: &[Action]) -> Option<&str> {
+        let names = self.of(mode);
+        let joined = actions.iter().map(|a| a.name()).collect::<Vec<_>>().join("+");
+        names.get(&joined).or_else(|| actions.iter().find_map(|a| names.get(a.name()))).map(String::as_str)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -161,6 +250,7 @@ pub struct Config {
     pub aim: AimConfig,
     pub steering: SteeringConfig,
     pub keys: Keys,
+    pub labels: Labels,
 }
 
 impl Default for Config {
@@ -173,6 +263,7 @@ impl Default for Config {
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
             keys: Keys { foot: gta6_foot(), drive: gta6_drive() },
+            labels: Labels { foot: gta6_foot_names(), drive: gta6_drive_names() },
         }
     }
 }
@@ -262,6 +353,72 @@ fn gta6_drive() -> Bindings {
         ("F2", &["create"]),
         ("MouseLeft", &["r1"]),               // drive-by
         ("MouseRight", &["l1"]),
+    ])
+}
+
+fn names(list: &[(&str, &str)]) -> Names {
+    list.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
+}
+
+/// What the buttons do in GTA 6 on foot (default control scheme, from the launch-day listings).
+fn gta6_foot_names() -> Names {
+    names(&[
+        ("ls_up", "Forward"),
+        ("ls_down", "Back"),
+        ("ls_left", "Left"),
+        ("ls_right", "Right"),
+        ("cross", "Jump"),
+        ("circle", "Crouch"),
+        ("square", "Melee"),
+        ("triangle", "Interact"),
+        ("triangle+mode_toggle", "Get in"),
+        ("l1", "Weapons"),
+        ("r1", "Cover"),
+        ("l2", "Aim"),
+        ("r2", "Shoot"),
+        ("l3", "Sprint"),
+        ("r3", "Behind"),
+        ("l3+r3", "Ability"),
+        ("options", "Pause"),
+        ("touchpad", "Map"),
+        ("create", "Capture"),
+        ("ps", "PS menu"),
+        ("dpad_up", "Phone"),
+        ("dpad_down", "Tasks"),
+        ("dpad_left", "Radio"),
+        ("dpad_right", "Detonate"),
+        ("mode_toggle", "Switch"),
+    ])
+}
+
+/// What the buttons do in GTA 6 in a vehicle.
+fn gta6_drive_names() -> Names {
+    names(&[
+        ("r2", "Gas"),
+        ("l2", "Brake"),
+        ("ls_left", "Steer L"),
+        ("ls_right", "Steer R"),
+        ("ls_up", "Lean fwd"),
+        ("ls_down", "Lean back"),
+        ("cross", "Handbrake"),
+        ("circle", "Lights"),
+        ("square", "Melee"),
+        ("triangle", "Get out"),
+        ("triangle+mode_toggle", "Get out"),
+        ("l1", "Weapons"),
+        ("r1", "Shoot"),
+        ("l3", "Horn"),
+        ("r3", "Behind"),
+        ("l3+r3", "Ability"),
+        ("options", "Pause"),
+        ("touchpad", "Map"),
+        ("create", "Capture"),
+        ("ps", "PS menu"),
+        ("dpad_up", "Phone"),
+        ("dpad_down", "Tasks"),
+        ("dpad_left", "Radio"),
+        ("dpad_right", "Indicator"),
+        ("mode_toggle", "Switch"),
     ])
 }
 
@@ -363,6 +520,27 @@ pub fn save(path: &std::path::Path, cfg: &Config, keep_broken: bool) -> Result<(
 }
 
 impl Config {
+    /// The actions a key has in a layout, as written in the file (unknown names are skipped).
+    pub fn actions_of(&self, mode: Mode, input: Input) -> Vec<Action> {
+        let found = self.keys.of(mode).iter().find(|(key, _)| Input::from_name(key) == Some(input));
+        found.map(|(_, bound)| bound.names().into_iter().filter_map(Action::from_name).collect()).unwrap_or_default()
+    }
+
+    /// Sets what a key does in a layout. An empty list unbinds it.
+    pub fn bind(&mut self, mode: Mode, input: Input, actions: &[Action]) {
+        let table = self.keys.of_mut(mode);
+        table.retain(|key, _| Input::from_name(key) != Some(input));
+        match actions {
+            [] => {}
+            [one] => {
+                table.insert(input.name(), Bound::One(one.name().to_string()));
+            }
+            many => {
+                table.insert(input.name(), Bound::Many(many.iter().map(|a| a.name().to_string()).collect()));
+            }
+        }
+    }
+
     /// Pulls hand-edited values back into the ranges the engine can work with.
     pub fn sanitize(&mut self) {
         let a = &mut self.aim;
@@ -428,6 +606,45 @@ mod tests {
         assert_eq!(warnings.len(), 4, "{warnings:?}");
         assert!(!layout.is_bound(Input::from_name("K").unwrap()));
         assert!(!layout.is_bound(Input::LALT));
+    }
+
+    #[test]
+    fn every_action_has_a_unique_name_that_reads_back() {
+        for a in Action::ALL {
+            assert_eq!(Action::from_name(a.name()), Some(a));
+        }
+        let mut seen: Vec<&str> = Action::ALL.iter().map(|a| a.name()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), Action::ALL.len());
+    }
+
+    #[test]
+    fn default_keys_all_have_a_game_name() {
+        let cfg = Config::default();
+        for mode in [Mode::Foot, Mode::Drive] {
+            for (key, bound) in cfg.keys.of(mode) {
+                let actions: Vec<Action> = bound.names().into_iter().filter_map(Action::from_name).collect();
+                assert!(cfg.labels.describe(mode, &actions).is_some(), "{mode:?} {key}");
+            }
+        }
+        let f = Input::from_name("F").unwrap();
+        assert_eq!(cfg.labels.describe(Mode::Foot, &cfg.actions_of(Mode::Foot, f)), Some("Get in"));
+        assert_eq!(cfg.labels.describe(Mode::Foot, &[Action::Press(Button::Triangle)]), Some("Interact"));
+    }
+
+    #[test]
+    fn binding_a_key_replaces_whatever_spelling_was_there() {
+        let mut cfg: Config = toml::from_str("[keys.foot]\nw = \"ls_up\"\n").unwrap();
+        let w = Input::from_name("W").unwrap();
+        assert_eq!(cfg.actions_of(Mode::Foot, w), vec![Action::LsUp]);
+        cfg.bind(Mode::Foot, w, &[Action::Press(Button::Cross), Action::ModeToggle]);
+        assert_eq!(cfg.keys.foot.len(), 1, "the lower-case entry is gone");
+        assert_eq!(cfg.actions_of(Mode::Foot, w), vec![Action::Press(Button::Cross), Action::ModeToggle]);
+        cfg.bind(Mode::Foot, w, &[]);
+        assert!(cfg.keys.foot.is_empty());
+        let (_, warnings) = Layout::compile(&cfg);
+        assert!(warnings.is_empty());
     }
 
     #[test]
