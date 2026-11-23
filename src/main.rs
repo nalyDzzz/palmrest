@@ -33,7 +33,7 @@ fn main() {
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }
-        for step in 0..6 {
+        for step in 0..7 {
             std::thread::sleep(std::time::Duration::from_millis(900));
             if let Ok(mut s) = state.lock() {
                 use prompts::Glyph::*;
@@ -43,6 +43,7 @@ fn main() {
                     2 => vec![(Triangle, "E".to_string())],
                     3 => vec![(Triangle, "F".to_string()), (Circle, "Bksp".to_string()), (Cross, "Enter / Space".to_string()), (Square, "R".to_string())],
                     4 => vec![(LeftStick, "WASD".to_string()), (RightStick, "Mouse".to_string())],
+                    5 => vec![(L1, "Tab / Side, back".to_string()), (R2, "Left click".to_string()), (L3, "Shift".to_string())],
                     _ => Vec::new(),
                 };
             }
@@ -72,9 +73,10 @@ fn main() {
                     .prompts
                     .iter()
                     .filter_map(|f| {
-                        let key = engine::keys_shown(&cfg, config::Mode::Foot, f.glyph)?.split(" / ").next()?.to_string();
+                        let key = engine::key_on_prompt(&cfg, config::Mode::Foot, f.glyph)?;
                         Some(overlay::Spot { glyph: f.glyph, key, x: f.x.round() as i32, y: f.y.round() as i32, diameter: f.diameter.round() as i32 })
                     })
+                    .take(overlay::SPOTS)
                     .collect();
                 println!("found {found:?} name card {} -> on-prompt hints {:?}", look.name_card, spots.iter().map(|s| (s.key.as_str(), s.x, s.y)).collect::<Vec<_>>());
                 if let Ok(mut s) = state.lock() {

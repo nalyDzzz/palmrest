@@ -1,15 +1,18 @@
 //! Finding the game's button prompts in its picture.
 //!
-//! GTA 6 draws a prompt as an evenly lit disc with the button's dark mark inside it: a triangle,
-//! circle, cross or square, or the letter L or R for a stick. The disc is white, or grey when
-//! the action is dimmed, and it has a dark rim, so it stands apart even from a white wall.
+//! GTA 6 draws a prompt as an evenly lit face with the button's dark mark on it. The face is a
+//! disc for the four face buttons (triangle, circle, cross, square), the sticks (L, R) and the
+//! stick clicks (L3, R3). For L1 and R1 it is a badge with a flat top and rounded lower corners,
+//! for L2 and R2 one with rounded upper corners and a flat bottom. The face is white, or grey
+//! when the action is dimmed, and it has a dark rim, so it stands apart even from a white wall.
 //!
 //! 1. Take everything at least as bright as some level and split it into connected areas. At a
-//!    level between the rim's darkness and the face's brightness, a disc's face is an area of its
-//!    own: the rim cuts it off from whatever is around it. Since discs come in several
-//!    brightnesses, this is done at a few levels.
-//! 2. Keep the areas that are disc-sized and round, with rim all the way round.
-//! 3. Read the dark pattern inside each on a 15 x 15 grid and compare it with the six known marks.
+//!    level between the rim's darkness and the face's brightness, a face is an area of its own:
+//!    the rim cuts it off from whatever is around it. Since faces come in several brightnesses,
+//!    this is done at a few levels.
+//! 2. Keep the areas that have the size and outline of a prompt, with rim around them.
+//! 3. Read the dark pattern inside each on a 15 x 15 grid and compare it with the known marks
+//!    for that outline.
 
 /// A button mark the game can show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -20,10 +23,40 @@ pub enum Glyph {
     Square,
     LeftStick,
     RightStick,
+    L1,
+    R1,
+    L2,
+    R2,
+    L3,
+    R3,
 }
 
 impl Glyph {
-    pub const ALL: [Glyph; 6] = [Glyph::Triangle, Glyph::Circle, Glyph::Cross, Glyph::Square, Glyph::LeftStick, Glyph::RightStick];
+    pub const ALL: [Glyph; 12] = [
+        Glyph::Triangle,
+        Glyph::Circle,
+        Glyph::Cross,
+        Glyph::Square,
+        Glyph::LeftStick,
+        Glyph::RightStick,
+        Glyph::L1,
+        Glyph::R1,
+        Glyph::L2,
+        Glyph::R2,
+        Glyph::L3,
+        Glyph::R3,
+    ];
+}
+
+/// The outline of a prompt's bright face.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Outline {
+    /// Round: the face buttons, the sticks, and the stick clicks L3 and R3.
+    Disc,
+    /// Flat on top with rounded lower corners, wider than tall: L1 and R1.
+    Shoulder,
+    /// Rounded upper corners and flat below, about as wide as tall: L2 and R2.
+    Trigger,
 }
 
 /// Is the vehicle name card on screen? GTA 6 shows it just above the minimap for a few seconds
@@ -119,7 +152,7 @@ pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
 #[derive(Default)]
 pub struct Steady {
     /// Per mark: looks in a row that found it, looks in a row that did not, and whether it is shown.
-    marks: [(u8, u8, bool); 6],
+    marks: [(u8, u8, bool); Glyph::ALL.len()],
 }
 
 impl Steady {
@@ -152,9 +185,10 @@ impl Steady {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Found {
     pub glyph: Glyph,
-    /// Centre of the disc, in pixels.
+    /// Centre of the prompt's face, in pixels.
     pub x: f32,
     pub y: f32,
+    /// How large the face is: a disc's diameter, a badge's longer side.
     pub diameter: f32,
     /// How well the mark matched, 0..1.
     pub score: f32,
@@ -177,10 +211,17 @@ const GRID_REACH: f32 = 0.72;
 const MATCH_AT_LEAST: f32 = 0.60;
 const LEAD_AT_LEAST: f32 = 0.10;
 
-/// The dark pattern of each mark on the grid, as the game draws them.
-const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
+/// A badge's corner counts as square when this much of it is face, and as rounded off when no
+/// more than this much is.
+const CORNER_SQUARE: f32 = 0.60;
+const CORNER_ROUNDED: f32 = 0.40;
+
+/// The dark pattern of each mark on the grid, as the game draws them, and the outline it comes
+/// in. All are read off saved game pictures.
+const PATTERNS: [(Glyph, Outline, [&str; GRID]); 12] = [
     (
         Glyph::Triangle,
+        Outline::Disc,
         [
             "......###......",
             "......###......",
@@ -201,6 +242,7 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
     ),
     (
         Glyph::Circle,
+        Outline::Disc,
         [
             "...............",
             "....#######....",
@@ -221,6 +263,7 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
     ),
     (
         Glyph::Cross,
+        Outline::Disc,
         [
             "...............",
             "...............",
@@ -241,6 +284,7 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
     ),
     (
         Glyph::Square,
+        Outline::Disc,
         [
             "...............",
             "...............",
@@ -261,6 +305,7 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
     ),
     (
         Glyph::LeftStick,
+        Outline::Disc,
         [
             "...............",
             "...............",
@@ -281,6 +326,7 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
     ),
     (
         Glyph::RightStick,
+        Outline::Disc,
         [
             "...............",
             "...............",
@@ -295,6 +341,132 @@ const PATTERNS: [(Glyph, [&str; GRID]); 6] = [
             ".....##..##....",
             ".....##...##...",
             "...............",
+            "...............",
+            "...............",
+        ],
+    ),
+    (
+        Glyph::L1,
+        Outline::Shoulder,
+        [
+            "...............",
+            "...##.....##...",
+            "...##....###...",
+            "...##...####...",
+            "...##...####...",
+            "...##...####...",
+            "...##...#.##...",
+            "...##.....##...",
+            "...##.....##...",
+            "...##.....##...",
+            "...##.....##...",
+            "...######.##...",
+            "...######.##...",
+            "...######.##...",
+            "...............",
+        ],
+    ),
+    (
+        Glyph::R1,
+        Outline::Shoulder,
+        [
+            "...............",
+            ".######.....##.",
+            ".######....###.",
+            ".#######..####.",
+            ".##..####.####.",
+            ".##...###.####.",
+            ".##...###.#.##.",
+            ".#######....##.",
+            ".######.....##.",
+            ".##..##.....##.",
+            ".##..##.....##.",
+            ".##..###....##.",
+            ".##..###....##.",
+            ".##...###...##.",
+            ".##....##...##.",
+        ],
+    ),
+    (
+        Glyph::L2,
+        Outline::Trigger,
+        [
+            "...............",
+            "...............",
+            "##........###..",
+            "###.....######.",
+            "###.....#######",
+            "###.....##...##",
+            "###..........##",
+            "###.........###",
+            "###.......###..",
+            "###.......###..",
+            "#######.#######",
+            "#######.#######",
+            "#######.#######",
+            "...............",
+            "...............",
+        ],
+    ),
+    (
+        Glyph::R2,
+        Outline::Trigger,
+        [
+            "...............",
+            "...............",
+            "#####.....####.",
+            "######...######",
+            "#######..######",
+            "##...##.##...##",
+            "##...##......##",
+            "#######......##",
+            "#####......###.",
+            "##.###....###..",
+            "##..###..######",
+            "##...##.#######",
+            "##...##.#######",
+            "...............",
+            "...............",
+        ],
+    ),
+    (
+        Glyph::L3,
+        Outline::Disc,
+        [
+            "...............",
+            "...............",
+            "...............",
+            ".##.....######.",
+            ".##.....######.",
+            ".##.......###..",
+            ".##......####..",
+            ".##......#####.",
+            ".##.........##.",
+            ".##....##...##.",
+            ".######.######.",
+            ".######..#####.",
+            "..........##...",
+            "...............",
+            "...............",
+        ],
+    ),
+    (
+        Glyph::R3,
+        Outline::Disc,
+        [
+            "...............",
+            "...............",
+            "...............",
+            ".#####..######.",
+            ".######.######.",
+            ".##..##...###..",
+            ".##..##...###..",
+            ".######..#####.",
+            ".#####......##.",
+            ".#####..##..##.",
+            ".##.###.######.",
+            ".##..##..#####.",
+            "..........##...",
             "...............",
             "...............",
         ],
@@ -359,9 +531,9 @@ fn alike_nearby(seen: &Grid, known: &Grid) -> f32 {
     best
 }
 
-/// Which mark a dark pattern is, if it is clearly one of them.
-fn classify(seen: &Grid) -> Option<(Glyph, f32)> {
-    let mut scores: Vec<(Glyph, f32)> = PATTERNS.iter().map(|(g, rows)| (*g, alike_nearby(seen, &pattern(rows)))).collect();
+/// Which mark a dark pattern on a face of this outline is, if it is clearly one of them.
+fn classify(seen: &Grid, outline: Outline) -> Option<(Glyph, f32)> {
+    let mut scores: Vec<(Glyph, f32)> = PATTERNS.iter().filter(|(_, o, _)| *o == outline).map(|(g, _, rows)| (*g, alike_nearby(seen, &pattern(rows)))).collect();
     scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     let (best, second) = (scores[0], scores[1]);
     (best.1 >= MATCH_AT_LEAST && best.1 - second.1 >= LEAD_AT_LEAST).then_some(best)
@@ -377,8 +549,8 @@ pub fn find(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
     let mut area = vec![0u32; w * h];
     let mut stack: Vec<u32> = Vec::new();
     for level in LEVELS {
-        for disc in discs_at(&lum, w, h, level, &mut area, &mut stack) {
-            // The same disc usually stands alone at more than one level: keep its best reading.
+        for disc in prompts_at(&lum, w, h, level, &mut area, &mut stack) {
+            // The same face usually stands alone at more than one level: keep its best reading.
             match found.iter_mut().find(|f| (f.x - disc.x).abs() < disc.diameter / 2.0 && (f.y - disc.y).abs() < disc.diameter / 2.0) {
                 Some(seen) if seen.score < disc.score => *seen = disc,
                 Some(_) => {}
@@ -391,10 +563,14 @@ pub fn find(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
 
 /// The prompts whose face stands alone when the picture is cut at `level`. `area` and `stack`
 /// are scratch space, reused between levels.
-fn discs_at(lum: &[u8], w: usize, h: usize, level: u8, area: &mut [u32], stack: &mut Vec<u32>) -> Vec<Found> {
+fn prompts_at(lum: &[u8], w: usize, h: usize, level: u8, area: &mut [u32], stack: &mut Vec<u32>) -> Vec<Found> {
     let mut found = Vec::new();
     let scale = h as f32 / 1080.0;
     let (min_d, max_d) = ((MIN_DIAMETER * scale) as i32, (MAX_DIAMETER * scale).ceil() as i32);
+    // How far outside a face its rim is looked for, and how far from the picture's edge a face
+    // must stay so that there is something to look at.
+    let rim_out = 1.5 * scale.max(1.0);
+    let edge = rim_out.ceil() as usize + 3;
     area.fill(0);
     let mut next_area = 0u32;
     for start in 0..w * h {
@@ -438,45 +614,101 @@ fn discs_at(lum: &[u8], w: usize, h: usize, level: u8, area: &mut [u32], stack: 
             }
         }
         let (bw, bh) = ((x1 - x0 + 1) as i32, (y1 - y0 + 1) as i32);
-        if bw < min_d || bh < min_d || bw > max_d || bh > max_d || (bw - bh).abs() > (3.0 * scale.max(1.0)) as i32 {
+        if bw < min_d || bh < min_d || bw > max_d || bh > max_d {
             continue;
         }
-        let (cx, cy) = (x0 as f32 + bw as f32 / 2.0 - 0.5, y0 as f32 + bh as f32 / 2.0 - 0.5);
-        let r = (bw + bh) as f32 / 4.0;
-        if cx - r - 4.0 < 0.0 || cy - r - 4.0 < 0.0 || cx + r + 4.0 >= w as f32 || cy + r + 4.0 >= h as f32 {
+        if x0 < edge || y0 < edge || x1 + edge >= w || y1 + edge >= h {
             continue;
         }
-        // A disc's face fills a good part of its circle. The mark takes the rest, and a square
-        // or circle mark also cuts off the face inside it, leaving about a third.
-        let covered = count as f32 / (std::f32::consts::PI * r * r);
-        if !(0.30..=1.02).contains(&covered) {
-            continue;
-        }
-        let face = (total / count as u64) as i16;
-        let around = |radius: f32| {
-            (0..48).map(move |i| {
-                let a = i as f32 * std::f32::consts::TAU / 48.0;
-                ((cy + radius * a.sin()).round() as usize) * w + (cx + radius * a.cos()).round() as usize
-            })
+        // The outline shows in the corners of the bounding box: a disc leaves all four empty, a
+        // shoulder badge fills the upper two, a trigger badge the lower two.
+        let member = |x: usize, y: usize| area[y * w + x] == id;
+        let k = ((0.15 * bw.min(bh) as f32).round() as usize).max(2);
+        let corner = |left: bool, top: bool| {
+            let filled = (0..k * k).filter(|n| member(if left { x0 + n % k } else { x1 - n % k }, if top { y0 + n / k } else { y1 - n / k })).count();
+            filled as f32 / (k * k) as f32
         };
-        // Just inside the edge it is face all the way round; just outside it, rim all the way round.
-        let face_ring = around(0.86 * r).filter(|&i| area[i] == id).count() as f32 / 48.0;
-        let rim_ring = around(r + 1.5 * scale.max(1.0)).filter(|&i| lum[i] < level).count() as f32 / 48.0;
-        // (A square mark's corners reach nearly to the edge, so the face ring is allowed some gaps.)
-        if face_ring < 0.72 || rim_ring < 0.85 {
+        let (top, bottom) = ([corner(true, true), corner(false, true)], [corner(true, false), corner(false, false)]);
+        let square = |pair: [f32; 2]| pair[0].min(pair[1]) >= CORNER_SQUARE;
+        let rounded = |pair: [f32; 2]| pair[0].max(pair[1]) <= CORNER_ROUNDED;
+        let as_wide_as_tall = (bw - bh).abs() <= (3.0 * scale.max(1.0)) as i32;
+        let wider = bw * 100 >= bh * 112 && bw * 100 <= bh * 145;
+        let outline = if wider && square(top) && rounded(bottom) {
+            Outline::Shoulder
+        } else if as_wide_as_tall && rounded(top) && square(bottom) {
+            Outline::Trigger
+        } else if as_wide_as_tall && !square(top) && !square(bottom) {
+            Outline::Disc
+        } else {
             continue;
-        }
+        };
+        let (cx, cy) = (x0 as f32 + bw as f32 / 2.0 - 0.5, y0 as f32 + bh as f32 / 2.0 - 0.5);
+        let face = (total / count as u64) as i16;
+        // Half the face's width and height, and the size to report.
+        let (rx, ry, diameter) = if outline == Outline::Disc {
+            let r = (bw + bh) as f32 / 4.0;
+            // A disc's face fills a good part of its circle. The mark takes the rest, and a square
+            // or circle mark also cuts off the face inside it, leaving about a third.
+            let covered = count as f32 / (std::f32::consts::PI * r * r);
+            if !(0.30..=1.02).contains(&covered) {
+                continue;
+            }
+            let around = |radius: f32| {
+                (0..48).map(move |i| {
+                    let a = i as f32 * std::f32::consts::TAU / 48.0;
+                    ((cy + radius * a.sin()).round() as usize) * w + (cx + radius * a.cos()).round() as usize
+                })
+            };
+            // Just inside the edge it is face all the way round; just outside it, rim all the way round.
+            let face_ring = around(0.86 * r).filter(|&i| area[i] == id).count() as f32 / 48.0;
+            let rim_ring = around(r + rim_out).filter(|&i| lum[i] < level).count() as f32 / 48.0;
+            // (A square mark's corners reach nearly to the edge, so the face ring is allowed some gaps.)
+            if face_ring < 0.72 || rim_ring < 0.85 {
+                continue;
+            }
+            (r, r, 2.0 * r)
+        } else {
+            // A badge's face fills its box but for the two rounded corners and the letters.
+            let filled = count as f32 / (bw * bh) as f32;
+            if !(0.45..=0.90).contains(&filled) {
+                continue;
+            }
+            let shoulder = outline == Outline::Shoulder;
+            let out = rim_out.round() as usize;
+            let half = (bh / 2) as usize;
+            // The flat edge is face from end to end. It is judged one row in: the outermost row
+            // is where the face fades into the rim.
+            let (flat_row, beyond_flat, beyond_round) = if shoulder { (y0 + 1, y0 - out, y1 + out) } else { (y1 - 1, y1 + out, y0 - out) };
+            let flat = (x0..=x1).filter(|&x| member(x, flat_row)).count() as f32 / bw as f32;
+            // Rim: past the flat edge, past both sides where they run straight, and past the
+            // middle of the rounded edge.
+            let straight_rows = if shoulder { y0..y0 + half } else { y1 + 1 - half..y1 + 1 };
+            let quarter = (bw / 4) as usize;
+            let rim = (x0..=x1)
+                .map(|x| (x, beyond_flat))
+                .chain(straight_rows.flat_map(|y| [(x0 - out, y), (x1 + out, y)]))
+                .chain((x0 + quarter..=x1 - quarter).map(|x| (x, beyond_round)));
+            let (mut dark, mut all) = (0u32, 0u32);
+            for (x, y) in rim {
+                all += 1;
+                dark += (lum[y * w + x] < level) as u32;
+            }
+            if flat < 0.85 || (dark as f32) < 0.85 * all as f32 {
+                continue;
+            }
+            (bw as f32 / 2.0, bh as f32 / 2.0, bw.max(bh) as f32)
+        };
         let mut grid: Grid = [[false; GRID]; GRID];
         let half = (GRID - 1) as f32 / 2.0;
         for (gy, row) in grid.iter_mut().enumerate() {
             for (gx, cell) in row.iter_mut().enumerate() {
-                let x = (cx + (gx as f32 - half) / half * GRID_REACH * r).round() as usize;
-                let y = (cy + (gy as f32 - half) / half * GRID_REACH * r).round() as usize;
+                let x = (cx + (gx as f32 - half) / half * GRID_REACH * rx).round() as usize;
+                let y = (cy + (gy as f32 - half) / half * GRID_REACH * ry).round() as usize;
                 *cell = (lum[y * w + x] as i16) < face - MARK_DARKER_BY;
             }
         }
-        if let Some((glyph, score)) = classify(&grid) {
-            found.push(Found { glyph, x: cx, y: cy, diameter: 2.0 * r, score });
+        if let Some((glyph, score)) = classify(&grid, outline) {
+            found.push(Found { glyph, x: cx, y: cy, diameter, score });
         }
     }
     found
@@ -488,19 +720,22 @@ mod tests {
 
     #[test]
     fn every_pattern_is_itself_and_no_other() {
-        for (glyph, rows) in &PATTERNS {
-            assert_eq!(classify(&pattern(rows)).map(|m| m.0), Some(*glyph));
+        for (glyph, outline, rows) in &PATTERNS {
+            assert_eq!(classify(&pattern(rows), *outline).map(|m| m.0), Some(*glyph));
         }
-        // No mark may pass for another, even when it sits a cell off: a perfect drawing of one
-        // must beat every other by a wide margin.
-        for (i, (a, rows_a)) in PATTERNS.iter().enumerate() {
-            for (b, rows_b) in &PATTERNS[i + 1..] {
+        // No mark may pass for another of the same outline, even when it sits a cell off: a
+        // perfect drawing of one must beat every other by a wide margin. (The closest pairs are
+        // the ones that differ in one letter only: L3 and R3, L2 and R2.)
+        for (i, (a, outline_a, rows_a)) in PATTERNS.iter().enumerate() {
+            for (b, _, rows_b) in PATTERNS[i + 1..].iter().filter(|(_, o, _)| o == outline_a) {
                 let likeness = alike_nearby(&pattern(rows_a), &pattern(rows_b));
                 println!("{a:?} vs {b:?}: {likeness:.2}");
-                assert!(likeness < 0.70, "{a:?} and {b:?} are too alike: {likeness}");
+                assert!(likeness < 0.76, "{a:?} and {b:?} are too alike: {likeness}");
             }
         }
-        assert_eq!(classify(&[[false; GRID]; GRID]), None, "an empty disc is no prompt");
+        for outline in [Outline::Disc, Outline::Shoulder, Outline::Trigger] {
+            assert_eq!(classify(&[[false; GRID]; GRID], outline), None, "an empty face is no prompt");
+        }
     }
 
     #[test]
@@ -522,7 +757,8 @@ mod tests {
         assert!(s.shown().is_empty());
     }
 
-    /// A picture of grey-brown blocks, with a prompt disc of `diameter` drawn at (cx, cy).
+    /// A picture of grey-brown blocks, with prompts drawn at (cx, cy): a disc of `diameter`, or
+    /// a badge that high (a shoulder badge is wider than that, as in the game).
     fn picture(w: usize, h: usize, discs: &[(Glyph, usize, usize, usize)]) -> Vec<u8> {
         let mut rgb = vec![0u8; w * h * 3];
         let mut state = 12345u32;
@@ -538,17 +774,26 @@ mod tests {
             }
         }
         for &(glyph, cx, cy, diameter) in discs {
-            let mark = pattern(&PATTERNS.iter().find(|(g, _)| *g == glyph).unwrap().1);
-            let r = diameter as f32 / 2.0;
+            let (_, outline, rows) = PATTERNS.iter().find(|(g, _, _)| *g == glyph).unwrap();
+            let mark = pattern(rows);
+            let ry = diameter as f32 / 2.0;
+            let rx = if *outline == Outline::Shoulder { ry * 28.0 / 22.0 } else { ry };
             for y in cy - diameter..=cy + diameter {
                 for x in cx - diameter..=cx + diameter {
                     let (dx, dy) = (x as f32 - cx as f32, y as f32 - cy as f32);
-                    if dx.hypot(dy) > r {
+                    // A badge is a box with two corners rounded off: the lower two or the upper two.
+                    let bend = 0.7 * ry;
+                    let (in_x, in_y) = (dx.abs() - (rx - bend), if *outline == Outline::Shoulder { dy } else { -dy } - (ry - bend));
+                    let inside = match outline {
+                        Outline::Disc => dx.hypot(dy) <= ry,
+                        _ => dx.abs() <= rx && dy.abs() <= ry && !(in_x > 0.0 && in_y > 0.0 && in_x.hypot(in_y) > bend),
+                    };
+                    if !inside {
                         continue;
                     }
                     // Which grid cell this pixel falls in, the same way `find` reads it.
                     let half = (GRID - 1) as f32 / 2.0;
-                    let (gx, gy) = ((dx / (GRID_REACH * r) * half + half).round(), (dy / (GRID_REACH * r) * half + half).round());
+                    let (gx, gy) = ((dx / (GRID_REACH * rx) * half + half).round(), (dy / (GRID_REACH * ry) * half + half).round());
                     let dark = (0.0..GRID as f32).contains(&gx) && (0.0..GRID as f32).contains(&gy) && mark[gy as usize][gx as usize];
                     let v = if dark { 25 } else { 250 };
                     rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[v, v, v]);
@@ -568,12 +813,27 @@ mod tests {
             (Glyph::Square, 700, 400, 32),
             (Glyph::LeftStick, 200, 400, 28),
             (Glyph::RightStick, 420, 450, 28),
+            (Glyph::L3, 620, 200, 30),
+            (Glyph::R3, 820, 260, 30),
         ];
         // Drawn for a 1080-line picture, placed in a picture half that size: sizes still fit.
         let discs: Vec<_> = placed.iter().map(|&(g, x, y, d)| (g, x, y, d / 2 + 6)).collect();
         let found = find(&picture(w, h, &discs), w, h);
         assert_eq!(found.len(), discs.len(), "{found:?}");
         for (glyph, x, y, _) in discs {
+            let hit = found.iter().find(|f| (f.x - x as f32).abs() < 3.0 && (f.y - y as f32).abs() < 3.0).expect("found where it was drawn");
+            assert_eq!(hit.glyph, glyph);
+        }
+    }
+
+    #[test]
+    fn shoulder_and_trigger_badges_are_found_and_told_apart() {
+        // At the game's own size: the letters on a badge are too fine to draw any smaller.
+        let (w, h) = (1920usize, 1080usize);
+        let placed = [(Glyph::L1, 64, 62, 22), (Glyph::R1, 448, 62, 22), (Glyph::L2, 1821, 673, 26), (Glyph::R2, 1866, 673, 26), (Glyph::R2, 856, 364, 28), (Glyph::L3, 1866, 881, 26)];
+        let found = find(&picture(w, h, &placed), w, h);
+        assert_eq!(found.len(), placed.len(), "{found:?}");
+        for (glyph, x, y, _) in placed {
             let hit = found.iter().find(|f| (f.x - x as f32).abs() < 3.0 && (f.y - y as f32).abs() < 3.0).expect("found where it was drawn");
             assert_eq!(hit.glyph, glyph);
         }
@@ -659,7 +919,12 @@ mod tests {
         use Glyph::*;
         // What is on screen in the frames that have prompts, judged by eye. Every other frame has none.
         // The second list is prompts that are half-lit or cut off: finding them is welcome, not required.
-        let expected: [(&str, &[Glyph], &[Glyph]); 19] = [
+        // The settings page that lists every button: two of each shoulder button, a stick click
+        // by "Look behind" and one by "Pause preview". The drawing of the controller in the middle
+        // has a cross button on it that reads as a prompt, and the two "Restore" prompts are dimmed.
+        const EVERY_BUTTON: &[Glyph] = &[L1, L1, R1, R1, L2, R2, Triangle, Square, Circle, Circle, Cross, L3, R3, R3, LeftStick, RightStick];
+        const PHOTO_MODE: &[Glyph] = &[LeftStick, RightStick, Triangle, Cross, Circle, L1, R1, L2, R2, L3];
+        let expected: [(&str, &[Glyph], &[Glyph]); 24] = [
             ("1795460287_on_foot", &[Triangle], &[Square]),
             ("1795460357_on_foot", &[Circle, Cross, Square], &[]),
             ("1123_100027_should_be_drive", &[Cross], &[]),
@@ -669,16 +934,21 @@ mod tests {
             ("1123_100734_should_be_foot", &[Triangle], &[]), // fading out, half see-through
             ("1795461500_driving", &[], &[Triangle]), // dark grey: not available
             ("1795461508_driving", &[], &[Triangle]),
-            ("1795461544_driving", &[Triangle], &[Square]), // the square's inside is shaded
+            ("1795461544_driving", &[Triangle, R1], &[Square]), // weapon wheel in a car; the square's inside is shaded
             ("1795461643_driving", &[Triangle], &[Square]), // the square is half-lit
             ("1795461708_on_foot", &[Cross, Square], &[]),
             ("1795461720_on_foot", &[Cross, Square], &[]),
-            ("1795461463_on_foot", &[], &[]),
+            ("1795461463_on_foot", &[L1], &[]),
             ("1795463103_driving", &[LeftStick, RightStick], &[]), // hot-wiring
             ("1795463106_driving", &[LeftStick, RightStick], &[]),
             ("1795463161_on_foot", &[Square], &[Triangle]), // break in; clone key is dimmed
-            ("1795463252_on_foot", &[Triangle], &[Square]), // weapon wheel
-            ("1795463737_on_foot", &[LeftStick, RightStick, Triangle, Cross, Circle], &[Square]), // photo mode
+            ("1795463252_on_foot", &[Triangle, R1, L2, R2], &[Square]), // weapon wheel
+            ("1795463737_on_foot", PHOTO_MODE, &[Square]),
+            ("1795464338_on_foot", PHOTO_MODE, &[Square]),
+            ("1795464624_driving", &[Cross, L1, R1, R3], &[Square]), // radio menu; its square is drawn larger and bolder
+            ("1795464689_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
+            ("1795464692_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
+            ("1795464718_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
         ];
         let dirs = std::env::var("PS5RS_FRAMES").expect("set PS5RS_FRAMES");
         let (mut frames, mut slowest, mut wrong) = (0, 0.0f64, 0u32);
@@ -715,7 +985,7 @@ mod tests {
                 }
                 let right = required == want;
                 wrong += !right as u32;
-                println!("{} {name}: {:?}{}", if right { "ok  " } else { "DIFF" }, found.iter().map(|f| format!("{:?} {:.2} d{:.0}", f.glyph, f.score, f.diameter)).collect::<Vec<_>>(), if right { String::new() } else { format!("  wanted {want:?}") });
+                println!("{} {name}: {:?}{}", if right { "ok  " } else { "DIFF" }, found.iter().map(|f| format!("{:?} {:.2} d{:.0} @{:.0},{:.0}", f.glyph, f.score, f.diameter, f.x, f.y)).collect::<Vec<_>>(), if right { String::new() } else { format!("  wanted {want:?}") });
                 frames += 1;
             }
         }

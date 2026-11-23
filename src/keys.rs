@@ -81,6 +81,19 @@ impl Input {
         short.to_string()
     }
 
+    /// The shortest name that still says which key it is, for a hint drawn on a prompt, where
+    /// two prompts can sit side by side with little room between them.
+    pub fn short(self) -> String {
+        match self.name().as_str() {
+            "MouseLeft" => "LMB".to_string(),
+            "MouseRight" => "RMB".to_string(),
+            "MouseMiddle" => "MMB".to_string(),
+            "Mouse4" => "M4".to_string(),
+            "Mouse5" => "M5".to_string(),
+            _ => self.label(),
+        }
+    }
+
     pub fn name(self) -> String {
         if let Some((s, _)) = NAMED.iter().find(|&&(_, id)| id == self.0) {
             return (*s).to_string();

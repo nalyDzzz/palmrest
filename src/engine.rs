@@ -154,26 +154,50 @@ fn connect() -> Result<Box<dyn Output>, String> {
     VirtualDs4::connect().map(|d| Box::new(d) as Box<dyn Output>)
 }
 
-/// The keys to show for a prompt in a layout: "E", "Enter / Space", "WASD", "Mouse". `None` if
-/// nothing is bound to it.
-pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
-    let button = match glyph {
+/// The controller button a prompt's mark stands for. `None` for the sticks, which are not buttons.
+fn button_of(glyph: Glyph) -> Option<Button> {
+    Some(match glyph {
         Glyph::Triangle => Button::Triangle,
         Glyph::Circle => Button::Circle,
         Glyph::Cross => Button::Cross,
         Glyph::Square => Button::Square,
-        Glyph::RightStick => return Some("Mouse".to_string()),
-        Glyph::LeftStick => {
+        Glyph::L1 => Button::L1,
+        Glyph::R1 => Button::R1,
+        Glyph::L2 => Button::L2,
+        Glyph::R2 => Button::R2,
+        Glyph::L3 => Button::L3,
+        Glyph::R3 => Button::R3,
+        Glyph::LeftStick | Glyph::RightStick => return None,
+    })
+}
+
+/// The keys to show for a prompt in a layout: "E", "Enter / Space", "WASD", "Mouse". `None` if
+/// nothing is bound to it.
+pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
+    match (glyph, button_of(glyph)) {
+        (_, Some(button)) => {
+            let keys: Vec<String> = cfg.keys_for(mode, Action::Press(button)).into_iter().take(2).map(|k| k.label()).collect();
+            (!keys.is_empty()).then(|| keys.join(" / "))
+        }
+        (Glyph::RightStick, None) => Some("Mouse".to_string()),
+        (_, None) => {
             let keys: Vec<String> = [Action::LsUp, Action::LsLeft, Action::LsDown, Action::LsRight]
                 .into_iter()
                 .filter_map(|a| cfg.keys_for(mode, a).first().map(|k| k.label()))
                 .collect();
             let letters = keys.iter().all(|k| k.chars().count() == 1);
-            return (!keys.is_empty()).then(|| keys.join(if letters { "" } else { " " }));
+            (!keys.is_empty()).then(|| keys.join(if letters { "" } else { " " }))
         }
-    };
-    let keys: Vec<String> = cfg.keys_for(mode, Action::Press(button)).into_iter().take(2).map(|k| k.label()).collect();
-    (!keys.is_empty()).then(|| keys.join(" / "))
+    }
+}
+
+/// The one key to draw on a prompt itself: the first of its keys, in its shortest form ("RMB"
+/// where the list says "Right click").
+pub fn key_on_prompt(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
+    match button_of(glyph) {
+        Some(button) => cfg.keys_for(mode, Action::Press(button)).first().map(|k| k.short()),
+        None => keys_shown(cfg, mode, glyph),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,9 +437,11 @@ fn run(
                     still
                         .iter()
                         .filter_map(|f| {
-                            let key = keys_shown(&cfg, mode, f.glyph)?.split(" / ").next()?.to_string();
+                            let key = key_on_prompt(&cfg, mode, f.glyph)?;
                             Some(Spot { glyph: f.glyph, key, x: f.x.round() as i32, y: f.y.round() as i32, diameter: f.diameter.round() as i32 })
                         })
+                        // Any beyond what the overlay can draw are listed in the label instead.
+                        .take(crate::overlay::SPOTS)
                         .collect()
                 } else {
                     Vec::new()
@@ -468,6 +494,32 @@ fn mode_sound(cfg: &Config, mode: Mode) {
         match mode {
             Mode::Drive => win::beep(1000, 70),
             Mode::Foot => win::beep(500, 70),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_mark_has_its_keys_and_the_prompt_gets_the_short_one() {
+        let cfg = Config::default();
+        assert_eq!(keys_shown(&cfg, Mode::Foot, Glyph::L2).as_deref(), Some("Right click"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L2).as_deref(), Some("RMB"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::R2).as_deref(), Some("LMB"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Drive, Glyph::R2).as_deref(), Some("W"), "in a vehicle R2 is the throttle");
+        assert_eq!(key_on_prompt(&cfg, Mode::Drive, Glyph::L2).as_deref(), Some("S"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L3).as_deref(), Some("Shift"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::LeftStick).as_deref(), Some("WASD"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::RightStick).as_deref(), Some("Mouse"));
+        // Every mark the finder knows leads to a key in both default layouts.
+        for glyph in Glyph::ALL {
+            for mode in [Mode::Foot, Mode::Drive] {
+                let keys = keys_shown(&cfg, mode, glyph);
+                println!("{glyph:?} {mode:?}: {keys:?} / on the prompt {:?}", key_on_prompt(&cfg, mode, glyph));
+                assert!(keys.is_some(), "{glyph:?} in {mode:?}");
+            }
         }
     }
 }

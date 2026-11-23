@@ -57,8 +57,9 @@ pub struct Spot {
     pub diameter: i32,
 }
 
-/// The most on-prompt hints shown at once.
-const SPOTS: usize = 10;
+/// The most on-prompt hints shown at once. The game's busiest pages (photo mode, the list of
+/// every button in the settings) show ten to twenty prompts.
+pub const SPOTS: usize = 24;
 /// The windows for on-prompt hints, with what each shows and where. Only the overlay thread uses it.
 static SPOT_WINDOWS: Mutex<Vec<(isize, Option<(Spot, (i32, i32))>)>> = Mutex::new(Vec::new());
 
@@ -83,7 +84,8 @@ fn tint(glyph: Glyph) -> (u8, u8, u8) {
         Glyph::Circle => (0xFF, 0x5C, 0x6C),
         Glyph::Cross => (0x6E, 0xA8, 0xFF),
         Glyph::Square => (0xF0, 0x8F, 0xD6),
-        Glyph::LeftStick | Glyph::RightStick => (0xB7, 0xA6, 0xFF),
+        Glyph::LeftStick | Glyph::RightStick | Glyph::L3 | Glyph::R3 => (0xB7, 0xA6, 0xFF),
+        Glyph::L1 | Glyph::R1 | Glyph::L2 | Glyph::R2 => (0xE8, 0xC2, 0x7A),
     }
 }
 
@@ -202,8 +204,53 @@ unsafe fn refresh(hwnd: HWND) {
     }
 }
 
+/// Where a hint sits on the screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Place {
+    /// The middle of the prompt the hint belongs to.
+    prompt_x: i32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    /// Which way the hint grows from its prompt when its key is wider than the prompt.
+    grows_right: bool,
+}
+
+/// Makes hints in one row give way to each other, and keeps them between `left` and `right`.
+///
+/// The game shows some buttons side by side ("L2 R2 Zoom"), closer together than two hints are
+/// wide. A hint that grows left moves further left to clear its right-hand neighbour; any other
+/// moves right to clear its left-hand neighbour. Either way the hints stay in the order of their
+/// prompts, touch each other, and between them still cover the prompts, and they still grow away
+/// from the game's own words.
+fn spread(places: &mut [Place], left: i32, right: i32, gap: i32) {
+    let same_row = |a: &Place, b: &Place| a.y < b.y + b.h && b.y < a.y + a.h;
+    let mut order: Vec<usize> = (0..places.len()).collect();
+    order.sort_by_key(|&i| places[i].prompt_x);
+    // The room a hint has: from the end of its nearest left-hand neighbours to the start of its
+    // right-hand ones, in its row.
+    let floor = |places: &[Place], n: usize, otherwise: i32| order[..n].iter().filter(|&&j| same_row(&places[j], &places[order[n]])).map(|&j| places[j].x + places[j].w + gap).max().unwrap_or(otherwise);
+    let ceiling = |places: &[Place], n: usize, otherwise: i32| order[n + 1..].iter().filter(|&&j| same_row(&places[j], &places[order[n]])).map(|&j| places[j].x - gap).min().unwrap_or(otherwise);
+    for (n, &i) in order.iter().enumerate().rev() {
+        if !places[i].grows_right {
+            places[i].x = places[i].x.min(ceiling(places, n, i32::MAX) - places[i].w);
+        }
+    }
+    for (n, &i) in order.iter().enumerate() {
+        places[i].x = places[i].x.max(floor(places, n, i32::MIN));
+    }
+    // A row pushed past the edge of the picture moves back in as a whole.
+    for (n, &i) in order.iter().enumerate().rev() {
+        places[i].x = places[i].x.min(ceiling(places, n, right) - places[i].w);
+    }
+    for (n, &i) in order.iter().enumerate() {
+        places[i].x = places[i].x.max(floor(places, n, left));
+    }
+}
+
 /// Brings the on-prompt hints in line with the state: one small window per prompt that holds
-/// still, centred on the prompt (the key takes the place of the button's mark) and kept inside
+/// still, covering the prompt (the key takes the place of the button's mark) and kept inside
 /// the game picture, so a prompt at the edge of the screen still gets a whole hint.
 unsafe fn refresh_spots(state: &OverlayState) {
     unsafe {
@@ -211,6 +258,9 @@ unsafe fn refresh_spots(state: &OverlayState) {
         let picture = if state.show { picture_rect(state.game_window) } else { None };
         let mut origin = POINT::default();
         let placed = picture.is_some() && ClientToScreen(HWND(state.game_window as *mut c_void), &mut origin).as_bool();
+        // First what each hint looks like and where it would sit if it were alone...
+        let mut hints: Vec<(usize, Option<Surface>)> = Vec::new();
+        let mut places: Vec<Place> = Vec::new();
         for (i, (hwnd, shown)) in pool.iter_mut().enumerate() {
             let window = HWND(*hwnd as *mut c_void);
             let (Some(picture), true, Some(spot)) = (picture, placed, state.spots.get(i)) else {
@@ -221,7 +271,7 @@ unsafe fn refresh_spots(state: &OverlayState) {
             };
             let scale = ((picture.bottom - picture.top) as f32 / 1080.0).clamp(0.5, 3.0);
             let redraw = shown.as_ref().is_none_or(|(s, _)| s.glyph != spot.glyph || s.key != spot.key || s.diameter != spot.diameter);
-            let hint = if redraw { draw_hint(&spot.key, tint(spot.glyph), spot.diameter, scale) } else { None };
+            let hint = if redraw { draw_hint(&spot.key, spot.glyph, spot.diameter, scale) } else { None };
             let (w, h) = match &hint {
                 Some(surface) => (surface.w, surface.h),
                 None if redraw => continue, // could not draw
@@ -231,13 +281,24 @@ unsafe fn refresh_spots(state: &OverlayState) {
                     (own.right - own.left, own.bottom - own.top)
                 }
             };
-            // One round end of the hint covers the prompt; the rest grows away from the game's own
+            // One end of the hint covers the prompt; the rest grows away from the game's own
             // words. In the lists at the right edge the words are left of the prompt, so the hint
             // grows right. Everywhere else the words are right of it, so the hint grows left.
-            let at_right_edge = origin.x + spot.x > picture.right - (picture.right - picture.left) / 10;
-            let x = if at_right_edge { origin.x + spot.x - h / 2 } else { origin.x + spot.x + h / 2 - w };
-            let x = x.clamp(picture.left, (picture.right - w).max(picture.left));
+            let prompt_x = origin.x + spot.x;
+            let grows_right = prompt_x > picture.right - (picture.right - picture.left) / 10;
+            let x = if grows_right { prompt_x - h / 2 } else { prompt_x + h / 2 - w };
             let y = (origin.y + spot.y - h / 2).clamp(picture.top, (picture.bottom - h).max(picture.top));
+            hints.push((i, hint));
+            places.push(Place { prompt_x, x, y, w, h, grows_right });
+        }
+        // ...then neighbours make room for each other...
+        if let Some(picture) = picture {
+            spread(&mut places, picture.left, picture.right, 1);
+        }
+        // ...and every hint is drawn and put in its place.
+        for ((i, hint), Place { x, y, w, h, .. }) in hints.into_iter().zip(places) {
+            let (hwnd, shown) = &mut pool[i];
+            let window = HWND(*hwnd as *mut c_void);
             if let Some(surface) = &hint {
                 let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
                 let (at, extent) = (POINT { x, y }, SIZE { cx: w, cy: h });
@@ -246,15 +307,21 @@ unsafe fn refresh_spots(state: &OverlayState) {
             } else if shown.as_ref().is_some_and(|(_, at)| *at != (x, y)) {
                 let _ = UpdateLayeredWindow(window, None, Some(&POINT { x, y }), None, None, None, COLORREF(0), None, ULW_ALPHA);
             }
-            *shown = Some((spot.clone(), (x, y)));
+            *shown = Some((state.spots[i].clone(), (x, y)));
             let _ = SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 }
 
-/// Draws one on-prompt hint: a dark pill at least as large as the prompt, with the key in the
-/// button's colour.
-unsafe fn draw_hint(key: &str, color: (u8, u8, u8), diameter: i32, scale: f32) -> Option<Surface> {
+/// Is this mark drawn on a badge (L1, R1, L2, R2) and not on a disc?
+fn on_a_badge(glyph: Glyph) -> bool {
+    matches!(glyph, Glyph::L1 | Glyph::R1 | Glyph::L2 | Glyph::R2)
+}
+
+/// Draws one on-prompt hint: a dark backing at least as large as the prompt, with the key in
+/// the button's colour. The backing has round ends on a disc and squarer corners on a badge, so
+/// that it covers either whole.
+unsafe fn draw_hint(key: &str, glyph: Glyph, diameter: i32, scale: f32) -> Option<Surface> {
     unsafe {
         let px = |v: f32| (v * scale).round() as i32;
         let s = SMOOTH;
@@ -271,7 +338,8 @@ unsafe fn draw_hint(key: &str, color: (u8, u8, u8), diameter: i32, scale: f32) -
         let stencil = Surface::new(w * s, h * s)?;
         SelectObject(stencil.dc, GetStockObject(WHITE_BRUSH));
         SelectObject(stencil.dc, GetStockObject(WHITE_PEN));
-        let _ = RoundRect(stencil.dc, 0, 0, w * s, h * s, h * s, h * s);
+        let bend = if on_a_badge(glyph) { px(9.0) * s } else { h * s };
+        let _ = RoundRect(stencil.dc, 0, 0, w * s, h * s, bend, bend);
         lay(&out, &stencil, BACKING, 0.94);
         stencil.pixels().fill(0);
         SetBkMode(stencil.dc, TRANSPARENT);
@@ -280,7 +348,7 @@ unsafe fn draw_hint(key: &str, color: (u8, u8, u8), diameter: i32, scale: f32) -
         let mut area = RECT { left: 0, top: 0, right: w * s, bottom: h * s };
         DrawTextW(stencil.dc, &mut wide, &mut area, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
         SelectObject(stencil.dc, previous);
-        lay(&out, &stencil, color, 1.0);
+        lay(&out, &stencil, tint(glyph), 1.0);
         let _ = DeleteObject(font.into());
         Some(out)
     }
@@ -436,7 +504,10 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
 
         let (h, pad, dot, mark) = (px(30.0).max(14), px(12.0), px(8.0).max(4), px(17.0).max(9));
         let (gap, tight) = (px(15.0), px(6.0));
-        let w = pad + dot + px(8.0) + name_w + key_w.iter().map(|k| gap + mark + tight + k).sum::<i32>() + pad;
+        // A mark with two characters in it (L1, R2, L3...) needs a wider frame than a single shape.
+        let two_characters = |glyph: Glyph| on_a_badge(glyph) || matches!(glyph, Glyph::L3 | Glyph::R3);
+        let mark_w: Vec<i32> = prompts.iter().map(|(glyph, _)| if two_characters(*glyph) { px(25.0).max(13) } else { mark }).collect();
+        let w = pad + dot + px(8.0) + name_w + key_w.iter().zip(&mark_w).map(|(k, m)| gap + m + tight + k).sum::<i32>() + pad;
 
         let out = Surface::new(w, h)?;
         let stencil = Surface::new(w * s, h * s)?;
@@ -468,7 +539,7 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
 
         // Each prompt: the button's mark as an outline in its own colour...
         let mut key_left = Vec::new();
-        for ((glyph, _), key_width) in prompts.iter().zip(&key_w) {
+        for (((glyph, _), key_width), mark_width) in prompts.iter().zip(&key_w).zip(&mark_w) {
             x += gap;
             stencil.pixels().fill(0);
             SelectObject(stencil.dc, GetStockObject(NULL_BRUSH));
@@ -498,9 +569,24 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
                     let _ = Ellipse(stencil.dc, a.x, a.y, b.x, b.y);
                     text_at(if *glyph == Glyph::LeftStick { "L" } else { "R" }, x, x + mark, small, true);
                 }
+                Glyph::L1 | Glyph::R1 | Glyph::L2 | Glyph::R2 | Glyph::L3 | Glyph::R3 => {
+                    // The button's name in a frame: squarish for a badge, round-ended for a stick click.
+                    let name = match glyph {
+                        Glyph::L1 => "L1",
+                        Glyph::R1 => "R1",
+                        Glyph::L2 => "L2",
+                        Glyph::R2 => "R2",
+                        Glyph::L3 => "L3",
+                        _ => "R3",
+                    };
+                    let (top, bottom) = ((h - mark) * s / 2, (h + mark) * s / 2);
+                    let bend = if on_a_badge(*glyph) { px(7.0) * s } else { mark * s };
+                    let _ = RoundRect(stencil.dc, x * s + s, top, (x + mark_width) * s - s, bottom, bend, bend);
+                    text_at(name, x, x + mark_width, small, true);
+                }
             }
             lay(&out, &stencil, tint(*glyph), 1.0);
-            x += mark + tight;
+            x += mark_width + tight;
             key_left.push(x);
             x += key_width;
         }
@@ -515,5 +601,59 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
         let _ = DeleteObject(font.into());
         let _ = DeleteObject(small.into());
         Some(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hint `w` wide and 30 high whose prompt is at `prompt_x`, placed as it would be alone.
+    fn hint(prompt_x: i32, y: i32, w: i32, grows_right: bool) -> Place {
+        Place { prompt_x, x: if grows_right { prompt_x - 15 } else { prompt_x + 15 - w }, y, w, h: 30, grows_right }
+    }
+
+    fn spans(places: &[Place]) -> Vec<(i32, i32)> {
+        places.iter().map(|p| (p.x, p.x + p.w)).collect()
+    }
+
+    #[test]
+    fn a_hint_alone_stays_on_its_prompt_and_inside_the_picture() {
+        let mut places = [hint(500, 100, 50, false), hint(1890, 300, 60, true), hint(10, 500, 50, false)];
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(spans(&places), [(465, 515), (1860, 1920), (0, 50)]);
+    }
+
+    #[test]
+    fn neighbours_at_the_right_edge_give_way_to_the_right() {
+        // "Zoom L2 R2": the prompts are 45 apart, the hints 51 wide.
+        let mut places = [hint(1821, 658, 51, true), hint(1866, 658, 51, true)];
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(spans(&places), [(1806, 1857), (1858, 1909)], "the first stays on its prompt, the second starts where it ends");
+        // With no room left at the edge, the row moves back in as a whole.
+        let mut places = [hint(1821, 658, 70, true), hint(1866, 658, 70, true)];
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(spans(&places), [(1779, 1849), (1850, 1920)]);
+    }
+
+    #[test]
+    fn neighbours_elsewhere_give_way_to_the_left() {
+        // "L2 R2 Zoom": the words are on the right, so the right hint stays and the left one moves.
+        let mut places = [hint(300, 900, 51, false), hint(345, 900, 51, false)];
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(spans(&places), [(257, 308), (309, 360)]);
+        // A wide hint that reaches over its left-hand neighbour's prompt: the neighbour's hint
+        // goes in front of it, in the order of the prompts.
+        let mut places = [hint(300, 900, 30, false), hint(345, 900, 90, false)];
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(spans(&places), [(239, 269), (270, 360)]);
+    }
+
+    #[test]
+    fn hints_in_other_rows_or_far_apart_are_left_alone() {
+        let mut places = [hint(1866, 672, 51, true), hint(1866, 724, 51, true), hint(64, 62, 34, false), hint(448, 62, 34, false)];
+        let before = places;
+        spread(&mut places, 0, 1920, 1);
+        assert_eq!(places, before);
     }
 }
