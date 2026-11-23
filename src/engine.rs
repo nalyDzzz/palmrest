@@ -470,7 +470,9 @@ fn run(
                 };
                 let listed = prompts.shown().into_iter().filter(|g| !spots.iter().any(|s| s.glyph == *g));
                 let shown = listed.filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
-                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, prompts: shown, spots };
+                // A trigger set to a part pull is always worth showing: it changes what its key does.
+                let pull = [Glyph::L2, Glyph::R2].into_iter().zip(mapper.pull()).filter(|(_, far)| *far < 0.995).map(|(g, far)| (g, format!("{:.0}%", far * 100.0))).collect();
+                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, pull, prompts: shown, spots };
                 if *o != next {
                     *o = next;
                 }

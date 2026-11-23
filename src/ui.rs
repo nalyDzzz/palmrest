@@ -500,6 +500,10 @@ impl App {
             changed |= ui.checkbox(&mut self.cfg.sounds, "Beep when switching").changed();
         });
         changed |= ui
+            .checkbox(&mut self.cfg.triggers.wheel_dial, "Mouse wheel sets how far L2 and R2 are pulled")
+            .on_hover_text("For the few things in the game that want a trigger held part of the way or squeezed slowly. Wheel down: the trigger keys pull less, a tenth per notch. Wheel up: more. While a trigger key is held the wheel sets that trigger (the one pressed last if both are held), so the two can differ; with neither held it sets both, ahead of the press. The label on the game shows the pull while it is not all the way, and it goes back to all the way a few seconds after the keys are let go.")
+            .changed();
+        changed |= ui
             .checkbox(&mut self.cfg.switch_on_name_card, "Switch to driving keys when the vehicle's name appears (experimental)")
             .on_hover_text("The get-in key then only gets in. The switch happens when the game shows the vehicle's name above the minimap. Getting out and Caps Lock work as before.")
             .changed();

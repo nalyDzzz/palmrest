@@ -24,11 +24,33 @@ pub struct Mapper {
     stick_wanted: bool,
     /// The get-in key does not switch to the driving layout by itself: something else will.
     hold_get_in: bool,
+    /// How far the keys for L2 and R2 pull them, 0..1, as set with the wheel (see `turn_dial`).
+    pull: [f32; 2],
+    /// When the dial was last turned or a trigger key last held: some time after, the pull is
+    /// all the way again.
+    pull_used: f64,
+    /// When a key for L2 and one for R2 last went down: the wheel sets the later one.
+    pulled_at: [f64; 2],
 }
+
+/// L2 and R2, in the order `pull` keeps them.
+const TRIGGERS: [Button; 2] = [Button::L2, Button::R2];
 
 impl Mapper {
     pub fn new(layout: Layout, smooth_steering: bool) -> Mapper {
-        Mapper { layout, mode: Mode::Foot, held: vec![false; Input::COUNT], pulses: Vec::new(), smooth_steering, steer: 0.0, stick_wanted: false, hold_get_in: false }
+        Mapper {
+            layout,
+            mode: Mode::Foot,
+            held: vec![false; Input::COUNT],
+            pulses: Vec::new(),
+            smooth_steering,
+            steer: 0.0,
+            stick_wanted: false,
+            hold_get_in: false,
+            pull: [1.0; 2],
+            pull_used: 0.0,
+            pulled_at: [0.0; 2],
+        }
     }
 
     /// Swaps in new layouts. Keys that are held stay held.
@@ -76,12 +98,63 @@ impl Mapper {
             return None;
         }
         if input.is_wheel() {
+            // As the triggers' dial the wheel does nothing else, except that a wheel direction
+            // with a job of its own keeps that job while no trigger key is held.
+            let held = self.triggers_held();
+            if self.layout.dial.is_some() && (held != [false, false] || self.doing(input).is_empty()) {
+                self.turn_dial(input == Input::WHEEL_UP, held, now);
+                return None;
+            }
             self.pulses.retain(|p| p.0 != input);
             self.pulses.push((input, now + WHEEL_PULSE));
             return self.switch_for(input);
         }
         let was = std::mem::replace(&mut self.held[input.index()], down);
-        if down && !was { self.switch_for(input) } else { None }
+        if down && !was {
+            for (i, trigger) in TRIGGERS.iter().enumerate() {
+                if self.doing(input).contains(&Action::Press(*trigger)) {
+                    self.pulled_at[i] = now;
+                }
+            }
+            return self.switch_for(input);
+        }
+        None
+    }
+
+    /// Which of L2 and R2 have a key held for them right now.
+    fn triggers_held(&self) -> [bool; 2] {
+        let mut held = [false; 2];
+        for input in (0..Input::COUNT).filter(|&i| self.held[i]).map(|i| Input(i as u16)) {
+            for (i, trigger) in TRIGGERS.iter().enumerate() {
+                held[i] |= self.doing(input).contains(&Action::Press(*trigger));
+            }
+        }
+        held
+    }
+
+    /// One notch of the wheel as the triggers' dial: up for more pull, down for less, never
+    /// less than one notch's worth. It sets the trigger whose key is held (the one pressed last
+    /// if both are), so the two can be given different pulls; with neither held it sets both,
+    /// ahead of the press.
+    fn turn_dial(&mut self, up: bool, held: [bool; 2], now: f64) {
+        let Some((step, _)) = self.layout.dial else { return };
+        let which: &[usize] = match held {
+            [true, true] if self.pulled_at[0] > self.pulled_at[1] => &[0],
+            [true, true] | [false, true] => &[1],
+            [true, false] => &[0],
+            [false, false] => &[0, 1],
+        };
+        for &i in which {
+            let wanted = self.pull[i] + if up { step } else { -step };
+            // Whole notches, so that as many up as down ends where it began.
+            self.pull[i] = ((wanted / step).round() * step).clamp(step, 1.0);
+        }
+        self.pull_used = now;
+    }
+
+    /// How far the keys for L2 and R2 pull them right now, 0..1.
+    pub fn pull(&self) -> [f32; 2] {
+        self.pull
     }
 
     fn switch_for(&mut self, input: Input) -> Option<Mode> {
@@ -150,6 +223,20 @@ impl Mapper {
                     Action::ModeToggle | Action::ModeFoot | Action::ModeDrive => {}
                 }
             }
+        }
+        // The triggers go as far as the dial says, and the dial lets go of itself: a pull left
+        // at a third would make the next shot or the next start a puzzle.
+        let pulled = [pad.pressed(Button::L2), pad.pressed(Button::R2)];
+        match self.layout.dial {
+            Some(_) if pulled != [false, false] => self.pull_used = now,
+            Some((_, reset_after)) if now - self.pull_used <= reset_after as f64 => {}
+            _ => self.pull = [1.0; 2],
+        }
+        if pulled[0] {
+            pad.l2 = self.pull[0];
+        }
+        if pulled[1] {
+            pad.r2 = self.pull[1];
         }
         lx = lx.clamp(-1.0, 1.0);
         ly = ly.clamp(-1.0, 1.0);
@@ -222,6 +309,93 @@ mod tests {
         assert_eq!((p.rx, p.ry), (0.25, -0.5));
         m.input(Input::MOUSE_LEFT, false, 0.0);
         assert!(!m.state(0.0, 0.001, (0.0, 0.0)).pressed(Button::R2));
+    }
+
+    fn mapper_with_dial(change: impl Fn(&mut Config)) -> Mapper {
+        let mut cfg = Config::default();
+        cfg.triggers.wheel_dial = true;
+        change(&mut cfg);
+        Mapper::new(Layout::compile(&cfg).0, true)
+    }
+
+    /// The pull of L2 and R2 in tenths, as the controller would get them with both keys held.
+    fn tenths(m: &Mapper) -> [i32; 2] {
+        m.pull().map(|v| (v * 10.0).round() as i32)
+    }
+
+    #[test]
+    fn the_wheel_does_not_touch_the_triggers_unless_it_is_their_dial() {
+        let mut m = mapper();
+        m.input(Input::WHEEL_DOWN, true, 0.0);
+        m.input(Input::MOUSE_LEFT, true, 0.0);
+        m.input(Input::WHEEL_DOWN, true, 0.0);
+        assert_eq!(m.state(0.0, 0.001, (0.0, 0.0)).r2, 1.0);
+    }
+
+    #[test]
+    fn the_dial_sets_the_pull_ahead_of_a_press_and_during_it() {
+        let mut m = mapper_with_dial(|_| {});
+        // Nothing held: both triggers, ahead of the press.
+        for _ in 0..7 {
+            m.input(Input::WHEEL_DOWN, true, 0.0);
+        }
+        assert_eq!(tenths(&m), [3, 3]);
+        m.input(Input::MOUSE_LEFT, true, 0.1); // R2
+        let p = m.state(0.1, 0.001, (0.0, 0.0));
+        assert!(p.pressed(Button::R2) && (p.r2 - 0.3).abs() < 1e-5, "{}", p.r2);
+        assert_eq!(p.l2, 0.0, "a trigger nobody presses stays up");
+        // While R2 is held the wheel squeezes R2 only.
+        m.input(Input::WHEEL_UP, true, 0.2);
+        m.input(Input::WHEEL_UP, true, 0.2);
+        assert_eq!(tenths(&m), [3, 5]);
+        // Then L2 as well: it was pressed last, so the wheel is its dial now, and each keeps its own pull.
+        m.input(Input::MOUSE_RIGHT, true, 0.3);
+        m.input(Input::WHEEL_DOWN, true, 0.3);
+        assert_eq!(tenths(&m), [2, 5]);
+        let p = m.state(0.3, 0.001, (0.0, 0.0));
+        assert!((p.l2 - 0.2).abs() < 1e-5 && (p.r2 - 0.5).abs() < 1e-5);
+        // Never below one notch, never above all the way.
+        for _ in 0..20 {
+            m.input(Input::WHEEL_DOWN, true, 0.4);
+        }
+        assert_eq!(tenths(&m), [1, 5]);
+        for _ in 0..20 {
+            m.input(Input::WHEEL_UP, true, 0.4);
+        }
+        assert_eq!(tenths(&m), [10, 5]);
+    }
+
+    #[test]
+    fn the_pull_is_all_the_way_again_a_while_after_the_triggers_are_let_go() {
+        let mut m = mapper_with_dial(|_| {});
+        m.input(Input::WHEEL_DOWN, true, 0.0);
+        m.input(Input::MOUSE_LEFT, true, 1.0);
+        assert!((m.state(50.0, 0.001, (0.0, 0.0)).r2 - 0.9).abs() < 1e-5, "it stays for as long as the key is held");
+        m.input(Input::MOUSE_LEFT, false, 50.0);
+        m.state(52.0, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [9, 9], "and a little longer, for the next press");
+        m.state(53.5, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [10, 10]);
+        // Turning the dial off puts it back at once.
+        m.input(Input::WHEEL_DOWN, true, 60.0);
+        assert_eq!(tenths(&m), [9, 9]);
+        m.set_layout(Layout::compile(&Config::default()).0, true);
+        m.state(60.0, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [10, 10]);
+    }
+
+    #[test]
+    fn a_wheel_direction_with_a_job_keeps_it_until_a_trigger_is_held() {
+        let mut m = mapper_with_dial(|cfg| cfg.bind(Mode::Foot, Input::WHEEL_DOWN, &[Action::Press(Button::DpadDown)]));
+        m.input(Input::WHEEL_DOWN, true, 0.0);
+        assert!(m.state(0.01, 0.001, (0.0, 0.0)).pressed(Button::DpadDown));
+        assert_eq!(tenths(&m), [10, 10]);
+        m.input(Input::WHEEL_UP, true, 0.0);
+        assert_eq!(tenths(&m), [10, 10], "already all the way");
+        m.input(Input::MOUSE_LEFT, true, 1.0);
+        m.input(Input::WHEEL_DOWN, true, 1.0);
+        assert_eq!(tenths(&m), [10, 9]);
+        assert!(!m.state(1.01, 0.001, (0.0, 0.0)).pressed(Button::DpadDown));
     }
 
     #[test]

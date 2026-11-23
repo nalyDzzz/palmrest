@@ -41,6 +41,8 @@ pub struct OverlayState {
     /// The game window to sit on top of.
     pub game_window: isize,
     pub mode: Mode,
+    /// Triggers whose keys pull them only part of the way right now, each with how far ("40%").
+    pub pull: Vec<(Glyph, String)>,
     /// The button prompts on screen, each with the key to press for it.
     pub prompts: Vec<(Glyph, String)>,
     /// Prompts that are holding still: the key is drawn right on each of them.
@@ -66,7 +68,7 @@ static SPOT_WINDOWS: Mutex<Vec<(isize, Option<(Spot, (i32, i32))>)>> = Mutex::ne
 
 impl Default for OverlayState {
     fn default() -> Self {
-        OverlayState { show: false, game_window: 0, mode: Mode::Foot, prompts: Vec::new(), spots: Vec::new() }
+        OverlayState { show: false, game_window: 0, mode: Mode::Foot, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }
     }
 }
 
@@ -147,6 +149,7 @@ static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
 #[derive(Clone, PartialEq)]
 struct Shown {
     mode: Mode,
+    pull: Vec<(Glyph, String)>,
     prompts: Vec<(Glyph, String)>,
     /// Height of the game picture the label was drawn for.
     picture_h: i32,
@@ -164,7 +167,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 /// Brings the label in line with the state: shown or hidden, right text, right place.
 unsafe fn refresh(hwnd: HWND) {
     let state = STATE.get().and_then(|s| s.lock().ok().map(|s| s.clone())).unwrap_or_default();
-    let on_top = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % ON_TOP_EVERY == 0;
+    let on_top = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(ON_TOP_EVERY);
     unsafe { refresh_spots(&state, on_top) };
     let mut shown = SHOWN.lock().unwrap_or_else(|p| p.into_inner());
     let place = if state.show { unsafe { picture_rect(state.game_window) } } else { None };
@@ -178,8 +181,8 @@ unsafe fn refresh(hwnd: HWND) {
     };
     let picture_h = picture.bottom - picture.top;
     let scale = (picture_h as f32 / 1080.0).clamp(0.5, 3.0);
-    let redraw = shown.as_ref().is_none_or(|s| s.mode != state.mode || s.picture_h != picture_h || s.prompts != state.prompts);
-    let label = if redraw { unsafe { draw_label(state.mode, &state.prompts, scale) } } else { None };
+    let redraw = shown.as_ref().is_none_or(|s| s.mode != state.mode || s.picture_h != picture_h || s.pull != state.pull || s.prompts != state.prompts);
+    let label = if redraw { unsafe { draw_label(state.mode, &state.pull, &state.prompts, scale) } } else { None };
     // Bottom left of the game picture, just right of the minimap. The bottom right is where the
     // game lists its own prompts, and the bottom middle is for subtitles.
     let margin = (26.0 * scale) as i32;
@@ -196,7 +199,7 @@ unsafe fn refresh(hwnd: HWND) {
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let _ = UpdateLayeredWindow(hwnd, None, Some(&at), Some(&extent), Some(label.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            *shown = Some(Shown { mode: state.mode, prompts: state.prompts.clone(), picture_h, at: (at.x, at.y) });
+            *shown = Some(Shown { mode: state.mode, pull: state.pull.clone(), prompts: state.prompts.clone(), picture_h, at: (at.x, at.y) });
         } else if let Some(s) = shown.as_mut() {
             // Same label: follow the game window if it moved.
             let mut own = RECT::default();
@@ -663,10 +666,13 @@ fn lay(out: &Surface, stencil: &Surface, color: (u8, u8, u8), strength: f32) {
     }
 }
 
-/// Draws the label: a dark rounded backing, a dot and the layout's name, then for every prompt
-/// on screen the button's mark and the key to press for it.
-unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Option<Surface> {
+/// Draws the label: a dark rounded backing, a dot and the layout's name, then any trigger that
+/// is set to a part pull with how far, in the trigger's colour, then for every prompt on screen
+/// the button's mark and the key to press for it.
+unsafe fn draw_label(mode: Mode, pull: &[(Glyph, String)], prompts: &[(Glyph, String)], scale: f32) -> Option<Surface> {
     unsafe {
+        // Everything after the name is a mark with words beside it; `true` for the pulls.
+        let prompts: Vec<(Glyph, &str, bool)> = pull.iter().map(|(g, t)| (*g, t.as_str(), true)).chain(prompts.iter().map(|(g, k)| (*g, k.as_str(), false))).collect();
         let (name, color) = match mode {
             Mode::Foot => ("ON FOOT", ON_FOOT),
             Mode::Drive => ("DRIVING", DRIVING),
@@ -703,14 +709,14 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
         };
         let name_w = width_of(name);
         let em = px(16.0) * s;
-        let key_w: Vec<i32> = prompts.iter().map(|(_, keys)| (laid_out(probe.dc, keys, em).1 + s - 1) / s).collect();
+        let key_w: Vec<i32> = prompts.iter().map(|(_, keys, _)| (laid_out(probe.dc, keys, em).1 + s - 1) / s).collect();
         SelectObject(probe.dc, previous_font);
 
         let (h, pad, dot, mark) = (px(30.0).max(14), px(12.0), px(8.0).max(4), px(17.0).max(9));
         let (gap, tight) = (px(15.0), px(6.0));
         // A mark with two characters in it (L1, R2, L3...) needs a wider frame than a single shape.
         let two_characters = |glyph: Glyph| on_a_badge(glyph) || matches!(glyph, Glyph::L3 | Glyph::R3);
-        let mark_w: Vec<i32> = prompts.iter().map(|(glyph, _)| if two_characters(*glyph) { px(25.0).max(13) } else { mark }).collect();
+        let mark_w: Vec<i32> = prompts.iter().map(|(glyph, _, _)| if two_characters(*glyph) { px(25.0).max(13) } else { mark }).collect();
         let w = pad + dot + px(8.0) + name_w + key_w.iter().zip(&mark_w).map(|(k, m)| gap + m + tight + k).sum::<i32>() + pad;
 
         let out = Surface::new(w, h)?;
@@ -743,7 +749,7 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
 
         // Each prompt: the button's mark as an outline in its own colour...
         let mut key_left = Vec::new();
-        for (((glyph, _), key_width), mark_width) in prompts.iter().zip(&key_w).zip(&mark_w) {
+        for (((glyph, _, _), key_width), mark_width) in prompts.iter().zip(&key_w).zip(&mark_w) {
             x += gap;
             stencil.pixels().fill(0);
             SelectObject(stencil.dc, GetStockObject(NULL_BRUSH));
@@ -796,10 +802,17 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
         }
         // ...and beside it the key, all in one pass.
         stencil.pixels().fill(0);
-        for (((_, keys), left), key_width) in prompts.iter().zip(&key_left).zip(&key_w) {
+        for (((_, keys, _), left), key_width) in prompts.iter().zip(&key_left).zip(&key_w).filter(|(((_, _, pull), _), _)| !pull) {
             draw_keys(stencil.dc, font, keys, em, RECT { left: left * s, top: 0, right: (left + key_width + 2) * s, bottom: h * s }, false);
         }
         lay(&out, &stencil, ON_FOOT, 1.0);
+        // A pull is not a key: it is written in the trigger's own colour.
+        stencil.pixels().fill(0);
+        for (((glyph, far, _), left), key_width) in prompts.iter().zip(&key_left).zip(&key_w).filter(|(((_, _, pull), _), _)| *pull) {
+            draw_keys(stencil.dc, font, far, em, RECT { left: left * s, top: 0, right: (left + key_width + 2) * s, bottom: h * s }, false);
+            lay(&out, &stencil, tint(*glyph), 1.0);
+            stencil.pixels().fill(0);
+        }
 
         let _ = DeleteObject(pen.into());
         let _ = DeleteObject(font.into());

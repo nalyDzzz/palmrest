@@ -29,11 +29,11 @@ fn main() {
     // seconds, switching between the two layouts, with nothing else running.
     if let Some(i) = std::env::args().position(|a| a == "--overlay-test") {
         let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
-        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, prompts: Vec::new(), spots: Vec::new() }));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }));
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }
-        for step in 0..8 {
+        for step in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(900));
             if let Ok(mut s) = state.lock() {
                 use keys::sign;
@@ -46,6 +46,13 @@ fn main() {
                     4 => vec![(LeftStick, "WASD".to_string()), (RightStick, "Mouse".to_string()), (L2, sign::MOUSE_RIGHT.to_string()), (R2, sign::MOUSE_LEFT.to_string())],
                     5 => vec![(L1, format!("{} / {}4", sign::TAB, sign::MOUSE)), (R3, format!("C / {}", sign::MOUSE_MIDDLE)), (L3, format!("{} / {}", sign::SHIFT, sign::CAPS_LOCK))],
                     6 => vec![(Square, format!("{}{}{}{}", sign::UP, sign::LEFT, sign::DOWN, sign::RIGHT)), (R1, format!("{}{}", sign::MOUSE_MIDDLE, sign::UP))],
+                    7 => vec![(Cross, sign::SPACE.to_string())],
+                    _ => Vec::new(),
+                };
+                // The last steps: triggers set to a part pull, alone and beside a prompt.
+                s.pull = match step {
+                    7 => vec![(L2, "40%".to_string()), (R2, "70%".to_string())],
+                    8 => vec![(R2, "30%".to_string())],
                     _ => Vec::new(),
                 };
             }

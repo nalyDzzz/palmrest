@@ -173,6 +173,26 @@ impl Default for AimConfig {
     }
 }
 
+/// How far the keys for L2 and R2 pull them. A key is all or nothing, but some things in the
+/// game want a trigger held part of the way, or squeezed slowly.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TriggerConfig {
+    /// The mouse wheel sets how far the trigger keys pull: down for less, up for more. It sets
+    /// the trigger whose key was pressed last while that key is held, and both when neither is.
+    pub wheel_dial: bool,
+    /// How much one notch of the wheel changes the pull (0.1: ten steps from nothing to all the way).
+    pub step: f32,
+    /// The pull goes back to all the way this many seconds after the trigger keys were let go.
+    pub reset_after: f32,
+}
+
+impl Default for TriggerConfig {
+    fn default() -> Self {
+        TriggerConfig { wheel_dial: false, step: 0.1, reset_after: 3.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SteeringConfig {
@@ -274,6 +294,7 @@ pub struct Config {
     pub switch_on_name_card: bool,
     pub aim: AimConfig,
     pub steering: SteeringConfig,
+    pub triggers: TriggerConfig,
     pub overlay: OverlayConfig,
     pub keys: Keys,
     pub labels: Labels,
@@ -290,6 +311,7 @@ impl Default for Config {
             switch_on_name_card: false,
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
+            triggers: TriggerConfig::default(),
             overlay: OverlayConfig::default(),
             keys: Keys { foot: gta6_foot(), drive: gta6_drive() },
             labels: Labels { foot: gta6_foot_names(), drive: gta6_drive_names() },
@@ -458,6 +480,9 @@ pub struct Layout {
     drive: Vec<Vec<Action>>,
     pub toggle: Input,
     pub picture: Option<Input>,
+    /// The mouse wheel sets how far the trigger keys pull: the change per notch, and the
+    /// seconds after which the pull is all the way again. `None` if that is turned off.
+    pub dial: Option<(f32, f32)>,
 }
 
 impl Layout {
@@ -500,7 +525,8 @@ impl Layout {
         };
         let foot = build("on foot", &cfg.keys.foot);
         let drive = build("driving", &cfg.keys.drive);
-        (Layout { foot, drive, toggle, picture }, warnings)
+        let dial = cfg.triggers.wheel_dial.then_some((cfg.triggers.step, cfg.triggers.reset_after));
+        (Layout { foot, drive, toggle, picture, dial }, warnings)
     }
 
     pub fn actions(&self, mode: Mode, input: Input) -> &[Action] {
@@ -512,8 +538,10 @@ impl Layout {
     }
 
     /// True if the input does something in either layout. Those are the inputs taken from Windows.
+    /// Does this key, button or wheel direction do anything? (The wheel does when it is the
+    /// dial for the triggers, bound or not.)
     pub fn is_bound(&self, input: Input) -> bool {
-        !self.actions(Mode::Foot, input).is_empty() || !self.actions(Mode::Drive, input).is_empty()
+        (self.dial.is_some() && input.is_wheel()) || !self.actions(Mode::Foot, input).is_empty() || !self.actions(Mode::Drive, input).is_empty()
     }
 }
 
@@ -637,6 +665,8 @@ impl Config {
         a.smoothing = finite(a.smoothing, 1.0).clamp(0.0, 4.0);
         self.game_fps = finite(self.game_fps, 30.0).clamp(20.0, 240.0);
         self.overlay.checks_per_second = finite(self.overlay.checks_per_second, 4.0).clamp(1.0, 30.0);
+        self.triggers.step = finite(self.triggers.step, 0.1).clamp(0.02, 0.5);
+        self.triggers.reset_after = finite(self.triggers.reset_after, 3.0).clamp(0.5, 60.0);
         for t in &mut self.targets {
             *t = t.trim().to_ascii_lowercase();
         }
@@ -663,6 +693,9 @@ mod tests {
         assert_eq!(layout.actions(Mode::Foot, f), &[Action::Press(Button::Triangle), Action::ModeToggle]);
         assert!(layout.is_bound(Input::MOUSE_LEFT));
         assert!(!layout.is_bound(Input::WHEEL_UP));
+        let mut with_dial = Config::default();
+        with_dial.triggers.wheel_dial = true;
+        assert!(Layout::compile(&with_dial).0.is_bound(Input::WHEEL_UP), "as the triggers' dial the wheel is taken, bound or not");
     }
 
     #[test]

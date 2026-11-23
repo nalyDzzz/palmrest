@@ -95,9 +95,10 @@ pub fn to_ds4(pad: &PadState) -> DS4Report {
         thumb_ry: axis(-pad.ry),
         buttons,
         special,
-        // A pressed trigger button with no travel reads as not pressed in some games.
-        trigger_l: trigger(if pad.pressed(Button::L2) { pad.l2.max(1.0) } else { pad.l2 }),
-        trigger_r: trigger(if pad.pressed(Button::R2) { pad.r2.max(1.0) } else { pad.r2 }),
+        // A pressed trigger button with no travel reads as not pressed in some games: pressed
+        // without a travel of its own means all the way.
+        trigger_l: trigger(if pad.pressed(Button::L2) && pad.l2 == 0.0 { 1.0 } else { pad.l2 }),
+        trigger_r: trigger(if pad.pressed(Button::R2) && pad.r2 == 0.0 { 1.0 } else { pad.r2 }),
     }
 }
 
@@ -158,6 +159,12 @@ mod tests {
         assert_eq!(r.buttons & !0xF, DS4_CROSS | DS4_R2 | DS4_L3);
         assert_eq!(r.special, DS4_SPECIAL_PS);
         assert_eq!((r.trigger_l, r.trigger_r), (0, 255));
+        // A trigger pulled part of the way: its button is down and its travel is that part.
+        pad.press(Button::L2);
+        pad.l2 = 0.4;
+        let r = to_ds4(&pad);
+        assert_eq!((r.trigger_l, r.trigger_r), (102, 255));
+        assert_eq!(r.buttons & DS4_L2, DS4_L2);
         let mut pad = PadState::default();
         pad.press(Button::DpadLeft);
         pad.press(Button::DpadRight);
