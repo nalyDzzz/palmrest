@@ -8,7 +8,9 @@ mod hook;
 mod keys;
 mod mapper;
 mod output;
+mod overlay;
 mod pad;
+mod prompts;
 mod ui;
 mod win;
 
@@ -22,6 +24,58 @@ fn main() {
     }
     if std::env::args().any(|a| a == "--mouse-test") {
         return mouse_test();
+    }
+    // Test aid: `--overlay-test <window handle>` shows the label over that window for a few
+    // seconds, switching between the two layouts, with nothing else running.
+    if let Some(i) = std::env::args().position(|a| a == "--overlay-test") {
+        let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, prompts: Vec::new() }));
+        if let Err(e) = overlay::start(state.clone()) {
+            return println!("FAILED {e}");
+        }
+        for step in 0..6 {
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            if let Ok(mut s) = state.lock() {
+                use prompts::Glyph::*;
+                s.mode = if step % 2 == 0 { config::Mode::Drive } else { config::Mode::Foot };
+                // Second half of the test: with prompt hints, a different set each step.
+                s.prompts = match step {
+                    2 => vec![(Triangle, "E".to_string())],
+                    3 => vec![(Triangle, "F".to_string()), (Circle, "Bksp".to_string()), (Cross, "Enter / Space".to_string()), (Square, "R".to_string())],
+                    4 => vec![(LeftStick, "WASD".to_string()), (RightStick, "Mouse".to_string())],
+                    _ => Vec::new(),
+                };
+            }
+        }
+        return println!("done");
+    }
+    // Test aid: `--prompt-test <window handle>` runs the real chain on that window for a few
+    // seconds: copy its picture, find the prompts, steady them, look up the keys, show the label.
+    if let Some(i) = std::env::args().position(|a| a == "--prompt-test") {
+        let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
+        let cfg = config::Config::default();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, ..Default::default() }));
+        if let Err(e) = overlay::start(state.clone()) {
+            return println!("FAILED {e}");
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let looker = win::start_prompt_watcher(tx);
+        let mut steady = prompts::Steady::default();
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(4) {
+            let _ = looker.try_send(hwnd);
+            if let Ok(engine::Msg::Prompts(Some(found))) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                steady.look(&found);
+                let shown: Vec<_> =
+                    steady.shown().into_iter().filter_map(|g| engine::keys_shown(&cfg, config::Mode::Foot, g).map(|k| (g, k))).collect();
+                println!("found {found:?} -> showing {shown:?}");
+                if let Ok(mut s) = state.lock() {
+                    s.prompts = shown;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        return println!("done");
     }
     // Test aid: `--save-picture <window handle> <file>` saves that window's picture once.
     let argv: Vec<String> = std::env::args().collect();

@@ -5,11 +5,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::aim::{Aim, AimParams};
-use crate::config::{Config, Layout, Mode};
+use crate::config::{Action, Config, Layout, Mode};
 use crate::keys::Input;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
-use crate::pad::PadState;
+use crate::overlay::OverlayState;
+use crate::prompts::{Glyph, Steady};
+use crate::pad::{Button, PadState};
 use crate::win;
 
 /// Time between passes while playing.
@@ -20,6 +22,8 @@ const IDLE_TICK: f64 = 0.02;
 const FOREGROUND_EVERY: f64 = 0.05;
 /// An unchanged controller state is sent again this often.
 const RESEND_EVERY: f64 = 0.1;
+/// How often the game picture is searched for button prompts.
+const LOOK_EVERY: f64 = 0.25;
 
 /// Everything sent to the engine: input events from the hooks, and requests from the window.
 #[derive(Debug)]
@@ -39,6 +43,8 @@ pub enum Msg {
     SavePicture,
     /// A picture was saved (its path), or could not be (why).
     PictureSaved(Result<String, String>),
+    /// The button prompts found in the game picture (`None`: the picture could not be read).
+    Prompts(Option<Vec<Glyph>>),
     Quit,
 }
 
@@ -101,7 +107,14 @@ impl Engine {
         win::start_input(tx.clone())?;
         let shared = status.clone();
         let own = tx.clone();
-        let thread = std::thread::Builder::new().name("engine".into()).spawn(move || run(rx, own, shared, cfg, layout)).map_err(|e| e.to_string())?;
+        // The label on top of the game. If it cannot start, the app works without it.
+        let overlay = Arc::new(Mutex::new(OverlayState::default()));
+        let _ = crate::overlay::start(overlay.clone());
+        let looker = win::start_prompt_watcher(tx.clone());
+        let thread = std::thread::Builder::new()
+            .name("engine".into())
+            .spawn(move || run(rx, own, shared, cfg, layout, overlay, looker))
+            .map_err(|e| e.to_string())?;
         Ok(Engine { tx, status, thread: Some(thread) })
     }
 
@@ -132,7 +145,38 @@ fn connect() -> Result<Box<dyn Output>, String> {
     VirtualDs4::connect().map(|d| Box::new(d) as Box<dyn Output>)
 }
 
-fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: Layout) {
+/// The keys to show for a prompt in a layout: "E", "Enter / Space", "WASD", "Mouse". `None` if
+/// nothing is bound to it.
+pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
+    let button = match glyph {
+        Glyph::Triangle => Button::Triangle,
+        Glyph::Circle => Button::Circle,
+        Glyph::Cross => Button::Cross,
+        Glyph::Square => Button::Square,
+        Glyph::RightStick => return Some("Mouse".to_string()),
+        Glyph::LeftStick => {
+            let keys: Vec<String> = [Action::LsUp, Action::LsLeft, Action::LsDown, Action::LsRight]
+                .into_iter()
+                .filter_map(|a| cfg.keys_for(mode, a).first().map(|k| k.label()))
+                .collect();
+            let letters = keys.iter().all(|k| k.chars().count() == 1);
+            return (!keys.is_empty()).then(|| keys.join(if letters { "" } else { " " }));
+        }
+    };
+    let keys: Vec<String> = cfg.keys_for(mode, Action::Press(button)).into_iter().take(2).map(|k| k.label()).collect();
+    (!keys.is_empty()).then(|| keys.join(" / "))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run(
+    rx: Receiver<Msg>,
+    tx: Sender<Msg>,
+    shared: Arc<Mutex<Status>>,
+    mut cfg: Config,
+    layout: Layout,
+    overlay: Arc<Mutex<OverlayState>>,
+    looker: std::sync::mpsc::SyncSender<isize>,
+) {
     win::fine_timers();
     let mut warnings = shared.lock().map(|s| s.warnings.clone()).unwrap_or_default();
     let mut mapper = Mapper::new(layout, cfg.steering.smooth);
@@ -146,6 +190,7 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
     let (mut mouse_reports, mut moving_since, mut mouse_rate) = (0u32, None::<f64>, 0.0f32);
     let mut game_window = 0isize;
     let (mut picture, mut pictures_saved) = (None::<Result<String, String>>, 0u32);
+    let (mut prompts, mut next_look) = (Steady::default(), 0.0f64);
 
     'run: loop {
         // Full speed while playing, testing, or while the last state still has to be delivered.
@@ -233,6 +278,12 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
                         });
                     }
                 }
+                Msg::Prompts(found) => {
+                    // A look that could not read the picture says nothing either way.
+                    if let (true, Some(found)) = (live, found) {
+                        prompts.look(&found);
+                    }
+                }
                 Msg::PictureSaved(result) => {
                     pictures_saved += result.is_ok() as u32;
                     picture = Some(result);
@@ -261,6 +312,7 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
                     mapper.release_all();
                     aim.reset();
                     win::release_cursor();
+                    prompts.clear();
                 }
             }
             game_window = if live { hwnd } else { 0 };
@@ -268,6 +320,15 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
             if live {
                 win::confine_cursor(hwnd); // again on every check: Windows drops the confinement easily
             }
+        }
+
+        let hints = cfg.overlay.enabled && cfg.overlay.prompts;
+        if live && hints && now >= next_look {
+            next_look = now + LOOK_EVERY;
+            let _ = looker.try_send(game_window); // dropped if the last look is still running
+        }
+        if !hints {
+            prompts.clear();
         }
 
         let mut pad = PadState::default();
@@ -305,6 +366,14 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
                     moving_since = None;
                 }
             }
+            if let Ok(mut o) = overlay.lock() {
+                let mode = mapper.mode();
+                let shown = prompts.shown().into_iter().filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
+                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, prompts: shown };
+                if *o != next {
+                    *o = next;
+                }
+            }
             if let Ok(mut s) = shared.lock() {
                 s.armed = armed;
                 s.front = front;
@@ -326,6 +395,9 @@ fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: 
         }
     }
 
+    if let Ok(mut o) = overlay.lock() {
+        o.show = false;
+    }
     // Leave nothing held: hooks off, cursor free, controller centred (then unplugged when dropped).
     win::set_live(false, false);
     win::release_cursor();

@@ -22,7 +22,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
     GetCurrentThread, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SetThreadPriority,
-    THREAD_PRIORITY_HIGHEST,
+    THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
@@ -356,6 +356,30 @@ unsafe fn hide_point(hwnd: HWND, window: RECT) -> (i32, i32) {
         }
         ((window.left + window.right) / 2, (window.top + window.bottom) / 2)
     }
+}
+
+/// Starts the thread that looks for button prompts in the game picture. Send it a window to have
+/// that window's picture searched; the marks found come back as `Msg::Prompts`. A request made
+/// while the previous look is still running is dropped.
+pub fn start_prompt_watcher(tx: Sender<Msg>) -> std::sync::mpsc::SyncSender<isize> {
+    let (ask, asked) = std::sync::mpsc::sync_channel::<isize>(1);
+    let _ = std::thread::Builder::new().name("prompts".into()).spawn(move || {
+        unsafe {
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+        while let Ok(hwnd) = asked.recv() {
+            let found = grab_window(hwnd).map(|(w, h, rgb)| {
+                let mut marks: Vec<_> = crate::prompts::find(&rgb, w as usize, h as usize).into_iter().map(|f| f.glyph).collect();
+                marks.sort();
+                marks.dedup();
+                marks
+            });
+            if tx.send(Msg::Prompts(found)).is_err() {
+                break;
+            }
+        }
+    });
+    ask
 }
 
 /// Copies a window's own picture (not whatever may be on top of it): width, height, and RGB

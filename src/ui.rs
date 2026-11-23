@@ -84,39 +84,7 @@ const TOTAL_UNITS: f32 = MAIN_UNITS + BLOCK_GAP + NAV_UNITS + BLOCK_GAP + MOUSE_
 
 /// What is printed on the keycap.
 fn legend(input: Input) -> String {
-    let name = input.name();
-    let short = match name.as_str() {
-        "LShift" | "RShift" => "Shift",
-        "LCtrl" | "RCtrl" => "Ctrl",
-        "LAlt" => "Alt",
-        "RAlt" => "Alt Gr",
-        "CapsLock" => "Caps",
-        "Backspace" => "Bksp",
-        "PageUp" => "PgUp",
-        "PageDown" => "PgDn",
-        "Insert" => "Ins",
-        "Delete" => "Del",
-        "Grave" => "`",
-        "Minus" => "-",
-        "Equals" => "=",
-        "LBracket" => "[",
-        "RBracket" => "]",
-        "Backslash" => "\\",
-        "Semicolon" => ";",
-        "Quote" => "'",
-        "Comma" => ",",
-        "Period" => ".",
-        "Slash" => "/",
-        "MouseLeft" => "Left click",
-        "MouseRight" => "Right click",
-        "MouseMiddle" => "Wheel click",
-        "WheelUp" => "Wheel up",
-        "WheelDown" => "Wheel down",
-        "Mouse4" => "Side, back",
-        "Mouse5" => "Side, front",
-        other => other,
-    };
-    short.to_string()
+    input.label()
 }
 
 pub struct App {
@@ -556,6 +524,10 @@ impl App {
             ui.add_space(12.0);
             changed |= ui.checkbox(&mut self.cfg.sounds, "Beep when switching").changed();
         });
+        changed |= ui.checkbox(&mut self.cfg.overlay.enabled, "Show the layout in use on top of the game").changed();
+        changed |= ui
+            .add_enabled(self.cfg.overlay.enabled, egui::Checkbox::new(&mut self.cfg.overlay.prompts, "Show my key for button prompts the game puts on screen"))
+            .changed();
         if changed {
             self.changed();
         }

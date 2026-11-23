@@ -186,6 +186,21 @@ impl Default for SteeringConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayConfig {
+    /// Show the layout in use in a small label on top of the game while playing.
+    pub enabled: bool,
+    /// Also show, in that label, the key for each button prompt the game has on screen.
+    pub prompts: bool,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        OverlayConfig { enabled: true, prompts: true }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Keys {
@@ -251,6 +266,7 @@ pub struct Config {
     pub sounds: bool,
     pub aim: AimConfig,
     pub steering: SteeringConfig,
+    pub overlay: OverlayConfig,
     pub keys: Keys,
     pub labels: Labels,
 }
@@ -265,6 +281,7 @@ impl Default for Config {
             sounds: true,
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
+            overlay: OverlayConfig::default(),
             keys: Keys { foot: gta6_foot(), drive: gta6_drive() },
             labels: Labels { foot: gta6_foot_names(), drive: gta6_drive_names() },
         }
@@ -545,6 +562,21 @@ impl Config {
         found.map(|(_, bound)| bound.names().into_iter().filter_map(Action::from_name).collect()).unwrap_or_default()
     }
 
+    /// The keys that do this action in a layout. Keys that do only this come first, then keys
+    /// that do it along with something else (such as also switching layout).
+    pub fn keys_for(&self, mode: Mode, action: Action) -> Vec<Input> {
+        let mut keys: Vec<(bool, Input)> = Vec::new();
+        for (name, bound) in self.keys.of(mode) {
+            let Some(input) = Input::from_name(name) else { continue };
+            let actions: Vec<Action> = bound.names().into_iter().filter_map(Action::from_name).collect();
+            if actions.contains(&action) {
+                keys.push((actions.len() > 1, input));
+            }
+        }
+        keys.sort();
+        keys.into_iter().map(|(_, input)| input).collect()
+    }
+
     /// Sets what a key does in a layout. An empty list unbinds it.
     pub fn bind(&mut self, mode: Mode, input: Input, actions: &[Action]) {
         let table = self.keys.of_mut(mode);
@@ -683,6 +715,17 @@ mod tests {
         cfg.picture_key = "F10".into(); // same as the on/off key
         let (layout, warnings) = Layout::compile(&cfg);
         assert!(layout.picture.is_none() && warnings.len() == 1);
+    }
+
+    #[test]
+    fn keys_for_an_action_put_the_plain_binding_first() {
+        let cfg = Config::default();
+        let names = |mode, action| cfg.keys_for(mode, action).into_iter().map(Input::name).collect::<Vec<_>>();
+        assert_eq!(names(Mode::Foot, Action::Press(Button::Triangle)), ["E", "F"], "E only interacts; F also switches layout");
+        assert_eq!(names(Mode::Drive, Action::Press(Button::Triangle)), ["F"]);
+        assert_eq!(names(Mode::Foot, Action::LsUp), ["W"]);
+        assert!(names(Mode::Foot, Action::Press(Button::Cross)).contains(&"Space".to_string()));
+        assert!(names(Mode::Drive, Action::LsUp).contains(&"X".to_string()));
     }
 
     #[test]

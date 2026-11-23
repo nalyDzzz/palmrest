@@ -44,6 +44,43 @@ impl Input {
         NAMED.iter().find(|(s, _)| s.eq_ignore_ascii_case(n)).map(|&(_, id)| Input(id))
     }
 
+    /// The short name to show for the key: what is printed on it, more or less.
+    pub fn label(self) -> String {
+        let name = self.name();
+        let short = match name.as_str() {
+            "LShift" | "RShift" => "Shift",
+            "LCtrl" | "RCtrl" => "Ctrl",
+            "LAlt" => "Alt",
+            "RAlt" => "Alt Gr",
+            "CapsLock" => "Caps",
+            "Backspace" => "Bksp",
+            "PageUp" => "PgUp",
+            "PageDown" => "PgDn",
+            "Insert" => "Ins",
+            "Delete" => "Del",
+            "Grave" => "`",
+            "Minus" => "-",
+            "Equals" => "=",
+            "LBracket" => "[",
+            "RBracket" => "]",
+            "Backslash" => "\\",
+            "Semicolon" => ";",
+            "Quote" => "'",
+            "Comma" => ",",
+            "Period" => ".",
+            "Slash" => "/",
+            "MouseLeft" => "Left click",
+            "MouseRight" => "Right click",
+            "MouseMiddle" => "Wheel click",
+            "WheelUp" => "Wheel up",
+            "WheelDown" => "Wheel down",
+            "Mouse4" => "Side, back",
+            "Mouse5" => "Side, front",
+            other => other,
+        };
+        short.to_string()
+    }
+
     pub fn name(self) -> String {
         if let Some((s, _)) = NAMED.iter().find(|&&(_, id)| id == self.0) {
             return (*s).to_string();
