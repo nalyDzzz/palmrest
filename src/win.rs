@@ -370,10 +370,7 @@ pub fn start_prompt_watcher(tx: Sender<Msg>) -> std::sync::mpsc::SyncSender<isiz
         while let Ok(hwnd) = asked.recv() {
             let found = grab_window(hwnd).map(|(w, h, rgb)| {
                 let (w, h) = (w as usize, h as usize);
-                let mut marks: Vec<_> = crate::prompts::find(&rgb, w, h).into_iter().map(|f| f.glyph).collect();
-                marks.sort();
-                marks.dedup();
-                crate::engine::Look { prompts: marks, name_card: crate::prompts::name_card(&rgb, w, h) }
+                crate::engine::Look { prompts: crate::prompts::find(&rgb, w, h), name_card: crate::prompts::name_card(&rgb, w, h) }
             });
             if tx.send(Msg::Look(found)).is_err() {
                 break;

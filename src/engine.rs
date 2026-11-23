@@ -9,8 +9,8 @@ use crate::config::{Action, Config, Layout, Mode};
 use crate::keys::Input;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
-use crate::overlay::OverlayState;
-use crate::prompts::{Glyph, Steady};
+use crate::overlay::{OverlayState, Spot};
+use crate::prompts::{Found, Glyph, Steady};
 use crate::pad::{Button, PadState};
 use crate::win;
 
@@ -51,8 +51,8 @@ pub enum Msg {
 /// What one look at the game picture found.
 #[derive(Debug)]
 pub struct Look {
-    /// The button prompts on screen.
-    pub prompts: Vec<Glyph>,
+    /// The button prompts on screen, with where each is in the game window.
+    pub prompts: Vec<Found>,
     /// The vehicle name card is showing.
     pub name_card: bool,
 }
@@ -202,6 +202,8 @@ fn run(
     let (mut prompts, mut next_look) = (Steady::default(), 0.0f64);
     // The name card: looks in a row that saw it, and whether it counts as showing.
     let (mut card_looks, mut card_showing) = (0u8, false);
+    // Prompts found by the last look, and those of them that were in the same place the look before.
+    let (mut last_found, mut still): (Vec<Found>, Vec<Found>) = (Vec::new(), Vec::new());
     mapper.set_hold_get_in(cfg.switch_on_name_card);
 
     'run: loop {
@@ -294,7 +296,14 @@ fn run(
                 Msg::Look(look) => {
                     // A look that could not read the picture says nothing either way.
                     if let (true, Some(look)) = (live, look) {
-                        prompts.look(&look.prompts);
+                        let mut marks: Vec<Glyph> = look.prompts.iter().map(|f| f.glyph).collect();
+                        marks.sort();
+                        marks.dedup();
+                        prompts.look(&marks);
+                        // A prompt in the same place two looks running is holding still: its hint can sit on it.
+                        let near = |a: &Found, b: &Found| a.glyph == b.glyph && (a.x - b.x).abs() < 0.6 * a.diameter && (a.y - b.y).abs() < 0.6 * a.diameter;
+                        still = look.prompts.iter().filter(|f| last_found.iter().any(|p| near(f, p))).copied().collect();
+                        last_found = look.prompts;
                         // Hot-wiring and the like: while the game shows the left stick, give it the stick.
                         mapper.set_stick_wanted(prompts.shown().contains(&Glyph::LeftStick));
                         // The card counts as showing after two looks in a row, and acts once, when it appears.
@@ -338,6 +347,8 @@ fn run(
                     prompts.clear();
                     mapper.set_stick_wanted(false);
                     (card_looks, card_showing) = (0, false);
+                    last_found.clear();
+                    still.clear();
                 }
             }
             game_window = if live { hwnd } else { 0 };
@@ -356,6 +367,8 @@ fn run(
         if !hints {
             prompts.clear();
             mapper.set_stick_wanted(false);
+            last_found.clear();
+            still.clear();
         }
 
         let mut pad = PadState::default();
@@ -395,8 +408,21 @@ fn run(
             }
             if let Ok(mut o) = overlay.lock() {
                 let mode = mapper.mode();
-                let shown = prompts.shown().into_iter().filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
-                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, prompts: shown };
+                // Prompts holding still get their key drawn on them; the others are listed in the label.
+                let spots: Vec<Spot> = if cfg.overlay.on_prompt {
+                    still
+                        .iter()
+                        .filter_map(|f| {
+                            let key = keys_shown(&cfg, mode, f.glyph)?.split(" / ").next()?.to_string();
+                            Some(Spot { glyph: f.glyph, key, x: f.x.round() as i32, y: f.y.round() as i32, diameter: f.diameter.round() as i32 })
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let listed = prompts.shown().into_iter().filter(|g| !spots.iter().any(|s| s.glyph == *g));
+                let shown = listed.filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
+                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, prompts: shown, spots };
                 if *o != next {
                     *o = next;
                 }

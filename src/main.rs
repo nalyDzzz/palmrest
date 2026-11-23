@@ -29,7 +29,7 @@ fn main() {
     // seconds, switching between the two layouts, with nothing else running.
     if let Some(i) = std::env::args().position(|a| a == "--overlay-test") {
         let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
-        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, prompts: Vec::new() }));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, prompts: Vec::new(), spots: Vec::new() }));
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }
@@ -65,13 +65,20 @@ fn main() {
         while started.elapsed() < std::time::Duration::from_secs(4) {
             let _ = looker.try_send(hwnd);
             if let Ok(engine::Msg::Look(Some(look))) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
-                let found = look.prompts;
+                let found: Vec<prompts::Glyph> = look.prompts.iter().map(|f| f.glyph).collect();
                 steady.look(&found);
-                let shown: Vec<_> =
-                    steady.shown().into_iter().filter_map(|g| engine::keys_shown(&cfg, config::Mode::Foot, g).map(|k| (g, k))).collect();
-                println!("found {found:?} name card {} -> showing {shown:?}", look.name_card);
+                // Every prompt gets its hint drawn on it (the test picture does not move).
+                let spots: Vec<overlay::Spot> = look
+                    .prompts
+                    .iter()
+                    .filter_map(|f| {
+                        let key = engine::keys_shown(&cfg, config::Mode::Foot, f.glyph)?.split(" / ").next()?.to_string();
+                        Some(overlay::Spot { glyph: f.glyph, key, x: f.x.round() as i32, y: f.y.round() as i32, diameter: f.diameter.round() as i32 })
+                    })
+                    .collect();
+                println!("found {found:?} name card {} -> on-prompt hints {:?}", look.name_card, spots.iter().map(|s| (s.key.as_str(), s.x, s.y)).collect::<Vec<_>>());
                 if let Ok(mut s) = state.lock() {
-                    s.prompts = shown;
+                    s.spots = spots;
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(200));

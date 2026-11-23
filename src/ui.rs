@@ -532,6 +532,9 @@ impl App {
         changed |= ui
             .add_enabled(self.cfg.overlay.enabled, egui::Checkbox::new(&mut self.cfg.overlay.prompts, "Show my key for button prompts the game puts on screen"))
             .changed();
+        changed |= ui
+            .add_enabled(self.cfg.overlay.enabled && self.cfg.overlay.prompts, egui::Checkbox::new(&mut self.cfg.overlay.on_prompt, "Draw the key on the prompt itself when it holds still"))
+            .changed();
         if changed {
             self.changed();
         }

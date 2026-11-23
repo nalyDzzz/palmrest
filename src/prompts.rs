@@ -659,7 +659,7 @@ mod tests {
         use Glyph::*;
         // What is on screen in the frames that have prompts, judged by eye. Every other frame has none.
         // The second list is prompts that are half-lit or cut off: finding them is welcome, not required.
-        let expected: [(&str, &[Glyph], &[Glyph]); 14] = [
+        let expected: [(&str, &[Glyph], &[Glyph]); 19] = [
             ("1795460287_on_foot", &[Triangle], &[Square]),
             ("1795460357_on_foot", &[Circle, Cross, Square], &[]),
             ("1123_100027_should_be_drive", &[Cross], &[]),
@@ -674,6 +674,11 @@ mod tests {
             ("1795461708_on_foot", &[Cross, Square], &[]),
             ("1795461720_on_foot", &[Cross, Square], &[]),
             ("1795461463_on_foot", &[], &[]),
+            ("1795463103_driving", &[LeftStick, RightStick], &[]), // hot-wiring
+            ("1795463106_driving", &[LeftStick, RightStick], &[]),
+            ("1795463161_on_foot", &[Square], &[Triangle]), // break in; clone key is dimmed
+            ("1795463252_on_foot", &[Triangle], &[Square]), // weapon wheel
+            ("1795463737_on_foot", &[LeftStick, RightStick, Triangle, Cross, Circle], &[Square]), // photo mode
         ];
         let dirs = std::env::var("PS5RS_FRAMES").expect("set PS5RS_FRAMES");
         let (mut frames, mut slowest, mut wrong) = (0, 0.0f64, 0u32);

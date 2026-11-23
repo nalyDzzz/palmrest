@@ -193,11 +193,13 @@ pub struct OverlayConfig {
     pub enabled: bool,
     /// Also show, in that label, the key for each button prompt the game has on screen.
     pub prompts: bool,
+    /// When a prompt holds still, draw its key right on it instead of listing it in the label.
+    pub on_prompt: bool,
 }
 
 impl Default for OverlayConfig {
     fn default() -> Self {
-        OverlayConfig { enabled: true, prompts: true }
+        OverlayConfig { enabled: true, prompts: true, on_prompt: true }
     }
 }
 

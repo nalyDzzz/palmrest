@@ -42,11 +42,29 @@ pub struct OverlayState {
     pub mode: Mode,
     /// The button prompts on screen, each with the key to press for it.
     pub prompts: Vec<(Glyph, String)>,
+    /// Prompts that are holding still: the key is drawn right on each of them.
+    pub spots: Vec<Spot>,
 }
+
+/// A key hint that sits on one prompt.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spot {
+    pub glyph: Glyph,
+    pub key: String,
+    /// Centre of the prompt in the game window, in pixels from its top left.
+    pub x: i32,
+    pub y: i32,
+    pub diameter: i32,
+}
+
+/// The most on-prompt hints shown at once.
+const SPOTS: usize = 10;
+/// The windows for on-prompt hints, with what each shows and where. Only the overlay thread uses it.
+static SPOT_WINDOWS: Mutex<Vec<(isize, Option<(Spot, (i32, i32))>)>> = Mutex::new(Vec::new());
 
 impl Default for OverlayState {
     fn default() -> Self {
-        OverlayState { show: false, game_window: 0, mode: Mode::Foot, prompts: Vec::new() }
+        OverlayState { show: false, game_window: 0, mode: Mode::Foot, prompts: Vec::new(), spots: Vec::new() }
     }
 }
 
@@ -95,6 +113,14 @@ pub fn start(state: Arc<Mutex<OverlayState>>) -> Result<(), String> {
             else {
                 return;
             };
+            // One small window per on-prompt hint, same kind as the label.
+            if let Ok(mut pool) = SPOT_WINDOWS.lock() {
+                for _ in 0..SPOTS {
+                    if let Ok(spot) = CreateWindowExW(style, w!("Ps5RemoteSimOverlay"), w!(""), WS_POPUP, 0, 0, 1, 1, None, None, Some(instance.into()), None) {
+                        pool.push((spot.0 as isize, None));
+                    }
+                }
+            }
             SetTimer(Some(window), 1, CHECK_EVERY, None);
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
@@ -129,6 +155,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 /// Brings the label in line with the state: shown or hidden, right text, right place.
 unsafe fn refresh(hwnd: HWND) {
     let state = STATE.get().and_then(|s| s.lock().ok().map(|s| s.clone())).unwrap_or_default();
+    unsafe { refresh_spots(&state) };
     let mut shown = SHOWN.lock().unwrap_or_else(|p| p.into_inner());
     let place = if state.show { unsafe { picture_rect(state.game_window) } } else { None };
     let Some(picture) = place else {
@@ -143,10 +170,10 @@ unsafe fn refresh(hwnd: HWND) {
     let scale = (picture_h as f32 / 1080.0).clamp(0.5, 3.0);
     let redraw = shown.as_ref().is_none_or(|s| s.mode != state.mode || s.picture_h != picture_h || s.prompts != state.prompts);
     let label = if redraw { unsafe { draw_label(state.mode, &state.prompts, scale) } } else { None };
-    // Bottom right of the game picture, clear of the edge and above the row where the game's
-    // menus put their own button prompts.
+    // Bottom left of the game picture, just right of the minimap. The bottom right is where the
+    // game lists its own prompts, and the bottom middle is for subtitles.
     let margin = (26.0 * scale) as i32;
-    let lift = (78.0 * scale) as i32;
+    let inset = (352.0 * scale) as i32;
     let size = match (&label, shown.as_ref()) {
         (Some(l), _) => (l.w, l.h),
         (None, Some(_)) => (0, 0), // unchanged: only the position may need updating
@@ -154,7 +181,7 @@ unsafe fn refresh(hwnd: HWND) {
     };
     unsafe {
         if let Some(label) = &label {
-            let at = POINT { x: picture.right - margin - size.0, y: picture.bottom - lift - size.1 };
+            let at = POINT { x: picture.left + inset, y: picture.bottom - margin - size.1 };
             let extent = SIZE { cx: label.w, cy: label.h };
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let _ = UpdateLayeredWindow(hwnd, None, Some(&at), Some(&extent), Some(label.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
@@ -164,7 +191,7 @@ unsafe fn refresh(hwnd: HWND) {
             // Same label: follow the game window if it moved.
             let mut own = RECT::default();
             let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut own);
-            let at = (picture.right - margin - (own.right - own.left), picture.bottom - lift - (own.bottom - own.top));
+            let at = (picture.left + inset, picture.bottom - margin - (own.bottom - own.top));
             if at != s.at {
                 let _ = UpdateLayeredWindow(hwnd, None, Some(&POINT { x: at.0, y: at.1 }), None, None, None, COLORREF(0), None, ULW_ALPHA);
                 s.at = at;
@@ -172,6 +199,90 @@ unsafe fn refresh(hwnd: HWND) {
         }
         // Stay above the game even if it re-asserts itself.
         let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+}
+
+/// Brings the on-prompt hints in line with the state: one small window per prompt that holds
+/// still, centred on the prompt (the key takes the place of the button's mark) and kept inside
+/// the game picture, so a prompt at the edge of the screen still gets a whole hint.
+unsafe fn refresh_spots(state: &OverlayState) {
+    unsafe {
+        let mut pool = SPOT_WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
+        let picture = if state.show { picture_rect(state.game_window) } else { None };
+        let mut origin = POINT::default();
+        let placed = picture.is_some() && ClientToScreen(HWND(state.game_window as *mut c_void), &mut origin).as_bool();
+        for (i, (hwnd, shown)) in pool.iter_mut().enumerate() {
+            let window = HWND(*hwnd as *mut c_void);
+            let (Some(picture), true, Some(spot)) = (picture, placed, state.spots.get(i)) else {
+                if shown.take().is_some() {
+                    let _ = ShowWindow(window, SW_HIDE);
+                }
+                continue;
+            };
+            let scale = ((picture.bottom - picture.top) as f32 / 1080.0).clamp(0.5, 3.0);
+            let redraw = shown.as_ref().is_none_or(|(s, _)| s.glyph != spot.glyph || s.key != spot.key || s.diameter != spot.diameter);
+            let hint = if redraw { draw_hint(&spot.key, tint(spot.glyph), spot.diameter, scale) } else { None };
+            let (w, h) = match &hint {
+                Some(surface) => (surface.w, surface.h),
+                None if redraw => continue, // could not draw
+                None => {
+                    let mut own = RECT::default();
+                    let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(window, &mut own);
+                    (own.right - own.left, own.bottom - own.top)
+                }
+            };
+            // One round end of the hint covers the prompt; the rest grows away from the game's own
+            // words. In the lists at the right edge the words are left of the prompt, so the hint
+            // grows right. Everywhere else the words are right of it, so the hint grows left.
+            let at_right_edge = origin.x + spot.x > picture.right - (picture.right - picture.left) / 10;
+            let x = if at_right_edge { origin.x + spot.x - h / 2 } else { origin.x + spot.x + h / 2 - w };
+            let x = x.clamp(picture.left, (picture.right - w).max(picture.left));
+            let y = (origin.y + spot.y - h / 2).clamp(picture.top, (picture.bottom - h).max(picture.top));
+            if let Some(surface) = &hint {
+                let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
+                let (at, extent) = (POINT { x, y }, SIZE { cx: w, cy: h });
+                let _ = UpdateLayeredWindow(window, None, Some(&at), Some(&extent), Some(surface.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
+                let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
+            } else if shown.as_ref().is_some_and(|(_, at)| *at != (x, y)) {
+                let _ = UpdateLayeredWindow(window, None, Some(&POINT { x, y }), None, None, None, COLORREF(0), None, ULW_ALPHA);
+            }
+            *shown = Some((spot.clone(), (x, y)));
+            let _ = SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+}
+
+/// Draws one on-prompt hint: a dark pill at least as large as the prompt, with the key in the
+/// button's colour.
+unsafe fn draw_hint(key: &str, color: (u8, u8, u8), diameter: i32, scale: f32) -> Option<Surface> {
+    unsafe {
+        let px = |v: f32| (v * scale).round() as i32;
+        let s = SMOOTH;
+        let font: HFONT = CreateFontW(-px(16.0) * s, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, FONT_OUTPUT_PRECISION(0), FONT_CLIP_PRECISION(0), ANTIALIASED_QUALITY, 0, w!("Bahnschrift"));
+        let mut wide: Vec<u16> = key.encode_utf16().collect();
+        let probe = Surface::new(8, 8)?;
+        let previous = SelectObject(probe.dc, font.into());
+        let mut extent = SIZE::default();
+        let _ = GetTextExtentPoint32W(probe.dc, &wide, &mut extent);
+        SelectObject(probe.dc, previous);
+        let h = (diameter + px(4.0)).max(px(24.0));
+        let w = ((extent.cx + s - 1) / s + px(16.0)).max(h);
+        let out = Surface::new(w, h)?;
+        let stencil = Surface::new(w * s, h * s)?;
+        SelectObject(stencil.dc, GetStockObject(WHITE_BRUSH));
+        SelectObject(stencil.dc, GetStockObject(WHITE_PEN));
+        let _ = RoundRect(stencil.dc, 0, 0, w * s, h * s, h * s, h * s);
+        lay(&out, &stencil, BACKING, 0.94);
+        stencil.pixels().fill(0);
+        SetBkMode(stencil.dc, TRANSPARENT);
+        SetTextColor(stencil.dc, COLORREF(0x00FF_FFFF));
+        let previous = SelectObject(stencil.dc, font.into());
+        let mut area = RECT { left: 0, top: 0, right: w * s, bottom: h * s };
+        DrawTextW(stencil.dc, &mut wide, &mut area, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+        SelectObject(stencil.dc, previous);
+        lay(&out, &stencil, color, 1.0);
+        let _ = DeleteObject(font.into());
+        Some(out)
     }
 }
 
