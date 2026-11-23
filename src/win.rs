@@ -11,21 +11,26 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint, MonitorFromWindow};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    GetMonitorInfoW, HBITMAP, HDC, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
+    SelectObject,
+};
+use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::Media::timeBeginPeriod;
 use windows::Win32::System::Diagnostics::Debug::Beep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
     GetCurrentThread, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SetThreadPriority,
-    THREAD_PRIORITY_HIGHEST,
+    THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowRect,
-    GetWindowThreadProcessId, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
+    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetForegroundWindow, GetMessageW, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
     SetTimer, WM_MBUTTONUP, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
 };
@@ -35,6 +40,7 @@ use crate::config::Layout;
 use crate::engine::Msg;
 use crate::hook::{Env, Hook, Out};
 use crate::keys::Input;
+use crate::vision::{self, Area, Gray, Reading};
 
 /// Event flag bits: the event was made by a program, not a device.
 const LLKHF_INJECTED: u32 = 0x10;
@@ -345,6 +351,141 @@ unsafe fn hide_point(hwnd: HWND, window: RECT) -> (i32, i32) {
             }
         }
         ((window.left + window.right) / 2, (window.top + window.bottom) / 2)
+    }
+}
+
+/// Starts the thread that looks at the game picture. Send it (window, area) to have the border of
+/// that area in that window measured; the answer comes back as `Msg::Minimap`. A request made
+/// while the previous one is still being worked on is dropped.
+pub fn start_watcher(tx: Sender<Msg>) -> std::sync::mpsc::SyncSender<(isize, Area)> {
+    let (ask, asked) = std::sync::mpsc::sync_channel::<(isize, Area)>(1);
+    let _ = std::thread::Builder::new().name("watcher".into()).spawn(move || {
+        unsafe {
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+        let mut copy = WindowCopy::default();
+        while let Ok((hwnd, area)) = asked.recv() {
+            let reading = copy.read_border(hwnd, &area);
+            if tx.send(Msg::Minimap(reading)).is_err() {
+                break;
+            }
+        }
+    });
+    ask
+}
+
+/// Test aid: one look at a window, outside the watcher thread.
+pub fn read_border_once(hwnd: isize, area: &Area) -> Option<Reading> {
+    WindowCopy::default().read_border(hwnd, area)
+}
+
+/// An off-screen copy of a window's picture, kept between looks so it is not rebuilt each time.
+#[derive(Default)]
+struct WindowCopy {
+    hwnd: isize,
+    size: (i32, i32),
+    dc: HDC,
+    bitmap: HBITMAP,
+}
+
+impl WindowCopy {
+    /// Copies the window's own picture (not what may be on top of it) and measures the border of
+    /// `area` within the 16:9 game picture centred in the window. `None` if the window is
+    /// minimized, too small, or cannot be copied.
+    fn read_border(&mut self, hwnd: isize, area: &Area) -> Option<Reading> {
+        unsafe {
+            let window = HWND(hwnd as *mut c_void);
+            if hwnd == 0 || IsIconic(window).as_bool() {
+                return None;
+            }
+            let mut client = RECT::default();
+            GetClientRect(window, &mut client).ok()?;
+            let (w, h) = (client.right, client.bottom);
+            if w < 320 || h < 180 {
+                return None;
+            }
+            if self.hwnd != hwnd || self.size != (w, h) {
+                self.free();
+                let screen = GetDC(Some(window));
+                self.dc = CreateCompatibleDC(Some(screen));
+                self.bitmap = CreateCompatibleBitmap(screen, w, h);
+                ReleaseDC(Some(window), screen);
+                if self.dc.is_invalid() || self.bitmap.is_invalid() {
+                    self.free();
+                    return None;
+                }
+                self.hwnd = hwnd;
+                self.size = (w, h);
+            }
+            let previous = SelectObject(self.dc, self.bitmap.into());
+            // 1 = client area only, 2 = include content drawn by the graphics card.
+            let copied = PrintWindow(window, self.dc, PRINT_WINDOW_FLAGS(3)).as_bool();
+            SelectObject(self.dc, previous);
+            if !copied {
+                return None;
+            }
+            // The game picture is 16:9, centred in the window.
+            let (w, h) = (w as usize, h as usize);
+            let (pw, ph) = if w * 9 <= h * 16 { (w, w * 9 / 16) } else { (h * 16 / 9, h) };
+            let (ox, oy) = ((w - pw) / 2, (h - ph) / 2);
+            let (x0, y0, x1, y1) = area.pixels(pw, ph);
+            let d = vision::reach(ph);
+            let margin = d + 2;
+            // The part of the window to read back: the rectangle plus a margin, kept inside the window.
+            let (left, top) = ((ox + x0).saturating_sub(margin), (oy + y0).saturating_sub(margin));
+            let (right, bottom) = ((ox + x1 + margin).min(w), (oy + y1 + margin).min(h));
+            if right <= left || bottom <= top {
+                return None;
+            }
+            let rows = bottom - top;
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w as i32,
+                    biHeight: h as i32, // bottom-up: scan line 0 is the last row
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bgrx = vec![0u8; w * rows * 4];
+            let got = GetDIBits(self.dc, self.bitmap, (h - bottom) as u32, rows as u32, Some(bgrx.as_mut_ptr() as *mut c_void), &mut info, DIB_RGB_COLORS);
+            if got as usize != rows {
+                return None;
+            }
+            let region_w = right - left;
+            let mut px = Vec::with_capacity(region_w * rows);
+            for row in (0..rows).rev() {
+                let line = &bgrx[row * w * 4..(row + 1) * w * 4];
+                px.extend(line[left * 4..right * 4].chunks_exact(4).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8));
+            }
+            let img = Gray { w: region_w, h: rows, px };
+            vision::measure(&img, (ox + x0 - left, oy + y0 - top, ox + x1 - left, oy + y1 - top), d)
+        }
+    }
+
+    fn free(&mut self) {
+        unsafe {
+            if !self.bitmap.is_invalid() {
+                let _ = DeleteObject(self.bitmap.into());
+            }
+            if !self.dc.is_invalid() {
+                let _ = DeleteDC(self.dc);
+            }
+        }
+        // Field by field: assigning a whole new value would drop the old one, which calls this again.
+        self.bitmap = HBITMAP::default();
+        self.dc = HDC::default();
+        self.hwnd = 0;
+        self.size = (0, 0);
+    }
+}
+
+impl Drop for WindowCopy {
+    fn drop(&mut self) {
+        self.free();
     }
 }
 

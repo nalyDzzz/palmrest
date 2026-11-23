@@ -12,6 +12,14 @@ const STEER_IN: f32 = 5.0;
 const STEER_OUT: f32 = 9.0;
 const STEER_MIN: f32 = 0.3;
 
+/// A key press that asks for another layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwitchRequest {
+    pub to: Mode,
+    /// The key also presses a button (get in / get out), rather than only switching.
+    pub with_button: bool,
+}
+
 pub struct Mapper {
     layout: Layout,
     mode: Mode,
@@ -40,33 +48,40 @@ impl Mapper {
         self.mode = mode;
     }
 
+    /// What the key does in the layout in use.
+    pub fn actions(&self, input: Input) -> &[Action] {
+        self.layout.actions(self.mode, input)
+    }
+
     /// A key or mouse button went down or up, or the wheel turned a notch (`down` is ignored for
-    /// the wheel). Returns the new layout if this press switched it.
-    pub fn input(&mut self, input: Input, down: bool, now: f64) -> Option<Mode> {
+    /// the wheel). If this press asks for another layout, that is returned. The layout does not
+    /// change until `set_mode` is called: when to switch is not the mapper's decision.
+    pub fn input(&mut self, input: Input, down: bool, now: f64) -> Option<SwitchRequest> {
         if input.index() >= Input::COUNT {
             return None;
         }
         if input.is_wheel() {
             self.pulses.retain(|p| p.0 != input);
             self.pulses.push((input, now + WHEEL_PULSE));
-            return self.switch_for(input);
+            return self.request_for(input);
         }
         let was = std::mem::replace(&mut self.held[input.index()], down);
-        if down && !was { self.switch_for(input) } else { None }
+        if down && !was { self.request_for(input) } else { None }
     }
 
-    fn switch_for(&mut self, input: Input) -> Option<Mode> {
-        let before = self.mode;
-        // Read the actions of the layout in use when the key went down: one press, one switch.
-        for act in self.layout.actions(before, input).to_vec() {
+    fn request_for(&self, input: Input) -> Option<SwitchRequest> {
+        let actions = self.actions(input);
+        let mut to = self.mode;
+        for act in actions {
             match act {
-                Action::ModeToggle => self.mode = before.other(),
-                Action::ModeFoot => self.mode = Mode::Foot,
-                Action::ModeDrive => self.mode = Mode::Drive,
+                Action::ModeToggle => to = self.mode.other(),
+                Action::ModeFoot => to = Mode::Foot,
+                Action::ModeDrive => to = Mode::Drive,
                 _ => {}
             }
         }
-        (self.mode != before).then_some(self.mode)
+        let with_button = actions.iter().any(|a| !a.switches_layout());
+        (to != self.mode).then_some(SwitchRequest { to, with_button })
     }
 
     /// The keys and buttons held right now, one bit per input.
@@ -188,17 +203,21 @@ mod tests {
     }
 
     #[test]
-    fn f_switches_layout_once_per_press_and_w_changes_meaning() {
+    fn f_asks_for_the_other_layout_once_per_press_and_w_changes_meaning() {
         let mut m = mapper();
         m.input(key("W"), true, 0.0);
-        assert_eq!(m.input(key("F"), true, 0.0), Some(Mode::Drive));
-        assert_eq!(m.input(key("F"), true, 0.0), None, "key repeat does not switch again");
+        let asked = m.input(key("F"), true, 0.0);
+        assert_eq!(asked, Some(SwitchRequest { to: Mode::Drive, with_button: true }));
+        assert_eq!(m.mode(), Mode::Foot, "asking is not switching");
+        assert_eq!(m.state(0.0, 0.001, (0.0, 0.0)).ly, 1.0, "W is still forward");
+        assert_eq!(m.input(key("F"), true, 0.0), None, "key repeat does not ask again");
+        m.set_mode(Mode::Drive);
         let p = m.state(0.0, 0.001, (0.0, 0.0));
         assert!(p.pressed(Button::Triangle) && p.pressed(Button::R2), "F is still Triangle, W is now the throttle");
         assert_eq!(p.ly, 0.0);
         m.input(key("F"), false, 0.0);
-        assert_eq!(m.input(key("F"), true, 0.0), Some(Mode::Foot));
-        assert_eq!(m.input(key("CapsLock"), true, 0.0), Some(Mode::Drive));
+        assert_eq!(m.input(key("F"), true, 0.0), Some(SwitchRequest { to: Mode::Foot, with_button: true }));
+        assert_eq!(m.input(key("CapsLock"), true, 0.0), Some(SwitchRequest { to: Mode::Foot, with_button: false }));
     }
 
     #[test]

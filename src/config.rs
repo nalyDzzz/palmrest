@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keys::Input;
 use crate::pad::Button;
+use crate::vision::Area;
 
 pub const APP_NAME: &str = "ps5-remote-sim";
 
@@ -186,6 +187,21 @@ impl Default for SteeringConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VehicleCheckConfig {
+    /// Watch the game's minimap to check that the get-in key really put you in a vehicle.
+    pub enabled: bool,
+    /// Where the minimap is, as shares of the game picture.
+    pub minimap: Area,
+}
+
+impl Default for VehicleCheckConfig {
+    fn default() -> Self {
+        VehicleCheckConfig { enabled: true, minimap: Area::GTA6_MINIMAP }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Keys {
@@ -249,6 +265,7 @@ pub struct Config {
     pub sounds: bool,
     pub aim: AimConfig,
     pub steering: SteeringConfig,
+    pub vehicle_check: VehicleCheckConfig,
     pub keys: Keys,
     pub labels: Labels,
 }
@@ -262,6 +279,7 @@ impl Default for Config {
             sounds: true,
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
+            vehicle_check: VehicleCheckConfig::default(),
             keys: Keys { foot: gta6_foot(), drive: gta6_drive() },
             labels: Labels { foot: gta6_foot_names(), drive: gta6_drive_names() },
         }
@@ -551,6 +569,11 @@ impl Config {
         a.curve = finite(a.curve, 1.8).clamp(0.5, 4.0);
         a.smoothing = finite(a.smoothing, 1.0).clamp(0.0, 4.0);
         self.game_fps = finite(self.game_fps, 30.0).clamp(20.0, 240.0);
+        let m = &mut self.vehicle_check.minimap;
+        let ok = [m.left, m.top, m.right, m.bottom].iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v));
+        if !ok || m.right - m.left < 0.02 || m.bottom - m.top < 0.02 {
+            *m = Area::GTA6_MINIMAP;
+        }
         for t in &mut self.targets {
             *t = t.trim().to_ascii_lowercase();
         }

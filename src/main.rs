@@ -10,6 +10,8 @@ mod mapper;
 mod output;
 mod pad;
 mod ui;
+mod vehicle;
+mod vision;
 mod win;
 
 use eframe::egui;
@@ -23,13 +25,24 @@ fn main() {
     if std::env::args().any(|a| a == "--mouse-test") {
         return mouse_test();
     }
+    // Test aid: `--read-minimap <window handle>` looks once at that window and prints what it sees.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(hwnd) = argv.iter().position(|a| a == "--read-minimap").and_then(|i| argv.get(i + 1)).and_then(|v| v.parse::<isize>().ok()) {
+        let started = std::time::Instant::now();
+        let reading = win::read_border_once(hwnd, &vision::Area::GTA6_MINIMAP);
+        let took = started.elapsed().as_secs_f64() * 1000.0;
+        return match reading {
+            Some(r) => println!("step {:.1} clear {:.2} rough {:.1} verdict {:?} took {took:.1} ms", r.step, r.clear, r.rough, r.verdict()),
+            None => println!("unreadable took {took:.1} ms"),
+        };
+    }
     let path = config::config_path();
     let (cfg, load_error) = config::load(&path);
     let engine = match engine::Engine::start(cfg.clone()) {
         Ok(engine) => engine,
         Err(error) => return fatal(&format!("Could not start reading the keyboard and mouse: {error}")),
     };
-    let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1280.0, 860.0]).with_min_inner_size([820.0, 520.0]);
+    let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1280.0, 910.0]).with_min_inner_size([820.0, 520.0]);
     // Test aids: `--no-focus` opens the window without taking the keyboard, `--at x,y` places it,
     // `--layout drive` starts on the driving layout, `--select F` opens with that key's editor showing.
     let args: Vec<String> = std::env::args().collect();
