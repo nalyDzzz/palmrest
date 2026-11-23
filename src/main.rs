@@ -124,6 +124,10 @@ fn main() {
             Err(why) => println!("FAILED {why}"),
         };
     }
+    // Test aid: `--dry` opens the window only to be looked at (see `win::DRY`).
+    if std::env::args().any(|a| a == "--dry") {
+        win::DRY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let path = config::config_path();
     let (cfg, load_error) = config::load(&path);
     let engine = match engine::Engine::start(cfg.clone()) {
@@ -132,13 +136,15 @@ fn main() {
     };
     let mut viewport = egui::ViewportBuilder::default().with_title(TITLE).with_inner_size([1280.0, 860.0]).with_min_inner_size([820.0, 520.0]);
     // Test aids: `--no-focus` opens the window without taking the keyboard, `--at x,y` places it,
-    // `--layout drive` starts on the driving layout, `--select F` opens with that key's editor showing.
+    // `--layout drive` starts on the driving layout, `--select F` opens with that key's editor showing,
+    // `--group triggers` with that group of settings showing.
     let args: Vec<String> = std::env::args().collect();
     let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     if after("--layout").as_deref() == Some("drive") {
         engine.send(engine::Msg::SetMode(config::Mode::Drive));
     }
     let select = after("--select").and_then(|name| keys::Input::from_name(&name));
+    let group = after("--group");
     if args.iter().any(|a| a == "--no-focus") {
         viewport = viewport.with_active(false);
     }
@@ -152,6 +158,9 @@ fn main() {
     let created = Box::new(move |cc: &eframe::CreationContext<'_>| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
         let mut app = ui::App::new(cc, engine, cfg, path, load_error);
         app.select(select);
+        if let Some(group) = &group {
+            app.show_group(group);
+        }
         Ok(Box::new(app))
     });
     if let Err(error) = eframe::run_native(TITLE, options, created) {

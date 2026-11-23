@@ -237,8 +237,16 @@ unsafe extern "system" fn raw_input_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
 }
 
 /// Starts the thread that reads the keyboard and mouse. Events are sent to `tx`.
+/// Test aid (`--dry`): the window opens only to be looked at. The keyboard and mouse are not
+/// read and no controller is plugged in, so it can be opened while a game is being played with
+/// another copy of the program.
+pub static DRY: AtomicBool = AtomicBool::new(false);
+
 pub fn start_input(tx: Sender<Msg>) -> Result<(), String> {
     TX.set(tx).map_err(|_| "input was already started".to_string())?;
+    if DRY.load(Relaxed) {
+        return Ok(());
+    }
     let (ready_tx, ready_rx) = channel::<Result<(), String>>();
     std::thread::Builder::new()
         .name("input".into())

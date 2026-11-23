@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Galley, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2};
 
-use crate::config::{self, Action, Config, Mode};
+use crate::config::{self, Action, Config, Mode, Triggers};
 use crate::engine::{Engine, Msg, Status};
 use crate::keys::Input;
 use crate::pad::{Button, PadState};
@@ -37,7 +37,7 @@ fn tint(action: Action) -> Color32 {
         Action::Press(Button::Circle) => Color32::from_rgb(0xFF, 0x5C, 0x6C),
         Action::Press(Button::Square) => Color32::from_rgb(0xF0, 0x8F, 0xD6),
         Action::Press(Button::Triangle) => Color32::from_rgb(0x2F, 0xD6, 0xA6),
-        Action::Press(Button::L1 | Button::R1 | Button::L2 | Button::R2) => Color32::from_rgb(0xE8, 0xC2, 0x7A),
+        Action::Press(Button::L1 | Button::R1 | Button::L2 | Button::R2) | Action::Ease(..) => Color32::from_rgb(0xE8, 0xC2, 0x7A),
         Action::Press(Button::L3 | Button::R3) | Action::LsUp | Action::LsDown | Action::LsLeft | Action::LsRight => Color32::from_rgb(0xB7, 0xA6, 0xFF),
         Action::Press(Button::DpadUp | Button::DpadDown | Button::DpadLeft | Button::DpadRight) => Color32::from_rgb(0xC9, 0xCE, 0xDA),
         Action::Press(Button::Options | Button::Create | Button::Touchpad | Button::Ps) => Color32::from_rgb(0x9A, 0xA3, 0xB8),
@@ -62,6 +62,51 @@ fn legend(input: Input) -> String {
     input.label()
 }
 
+/// The groups the settings are sorted into. One shows at a time.
+#[derive(Clone, Copy, PartialEq)]
+enum Group {
+    Aim,
+    Driving,
+    Triggers,
+    Overlay,
+}
+
+impl Group {
+    const ALL: [Group; 4] = [Group::Aim, Group::Driving, Group::Triggers, Group::Overlay];
+
+    fn title(self) -> &'static str {
+        match self {
+            Group::Aim => "AIM",
+            Group::Driving => "DRIVING",
+            Group::Triggers => "TRIGGERS",
+            Group::Overlay => "OVERLAY",
+        }
+    }
+
+    /// What the group is about, in a line.
+    fn about(self) -> &'static str {
+        match self {
+            Group::Aim => "How the mouse turns the camera.",
+            Group::Driving => "The driving keys, and switching between them and the on-foot keys.",
+            Group::Triggers => "For the few things in the game that want L2 or R2 held part of the way or let down slowly, like lifting weights. A key is all or nothing; these set how far it pulls.",
+            Group::Overlay => "What is drawn on top of the game while you play.",
+        }
+    }
+}
+
+/// A slider with what it does written under it. Returns whether it was moved.
+fn described(ui: &mut egui::Ui, enabled: bool, slider: egui::Slider<'_>, help: &str) -> bool {
+    let moved = ui.add_enabled(enabled, slider).changed();
+    note(ui, help);
+    ui.add_space(3.0);
+    moved
+}
+
+/// A line of explanation in small grey type.
+fn note(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).small().color(MUTED));
+}
+
 pub struct App {
     engine: Engine,
     cfg: Config,
@@ -72,6 +117,8 @@ pub struct App {
     test_tilt: f32,
     /// The key being changed.
     selected: Option<Input>,
+    /// The group of settings that is showing.
+    group: Group,
     /// The typeface for keycaps, headings and the state word.
     display: FontFamily,
 }
@@ -81,12 +128,19 @@ impl App {
         let display = install_fonts(&cc.egui_ctx);
         apply_theme(&cc.egui_ctx);
         let test_tilt = cfg.aim.deadzone;
-        App { engine, cfg, path, load_error, save_error: None, unsaved_since: None, test_tilt, selected: None, display }
+        App { engine, cfg, path, load_error, save_error: None, unsaved_since: None, test_tilt, selected: None, group: Group::Aim, display }
     }
 
     /// Opens with this key's editor showing.
     pub fn select(&mut self, input: Option<Input>) {
         self.selected = input;
+    }
+
+    /// Opens with this group of settings showing, by its title.
+    pub fn show_group(&mut self, title: &str) {
+        if let Some(group) = Group::ALL.into_iter().find(|g| g.title().eq_ignore_ascii_case(title)) {
+            self.group = group;
+        }
     }
 
     fn font(&self, size: f32) -> FontId {
@@ -385,6 +439,16 @@ impl App {
                 }
             }
             Action::Press(b @ (Button::L1 | Button::R1 | Button::L2 | Button::R2 | Button::L3 | Button::R3 | Button::Ps)) => word(b.label()),
+            Action::Ease(which, more) => {
+                // The trigger's name with a minus or a plus: less pull, more pull.
+                let name = match which {
+                    Triggers::L2 => "L2",
+                    Triggers::R2 => "R2",
+                    Triggers::Both => "LR",
+                };
+                let text = format!("{name}{}", if more { "+" } else { "-" });
+                painter.text(c + Vec2::new(-r * 0.5, 0.0), Align2::CENTER_CENTER, text, self.font((r * 1.45).max(8.0)), color);
+            }
             Action::ModeToggle | Action::ModeFoot | Action::ModeDrive => {
                 // Two arrows passing each other.
                 let (up, down) = (c + Vec2::new(0.0, -r * 0.4), c + Vec2::new(0.0, r * 0.4));
@@ -466,23 +530,44 @@ impl App {
         });
     }
 
-    fn aim_settings(&mut self, ui: &mut egui::Ui, status: &Status) {
-        ui.label(RichText::new("AIM").font(self.font(13.0)).color(MUTED));
-        ui.add_space(2.0);
+    /// The settings, sorted into groups: a row of group names, and under it the one that is showing.
+    fn settings(&mut self, ui: &mut egui::Ui, status: &Status) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for group in Group::ALL {
+                let on = self.group == group;
+                let name = RichText::new(group.title()).font(self.font(13.0)).color(if on { TEXT } else { MUTED });
+                if ui.selectable_label(on, name).clicked() {
+                    self.group = group;
+                }
+            }
+        });
+        ui.add_space(4.0);
+        note(ui, self.group.about());
+        ui.add_space(6.0);
+        let changed = match self.group {
+            Group::Aim => self.aim_settings(ui),
+            Group::Driving => self.driving_settings(ui),
+            Group::Triggers => self.trigger_settings(ui),
+            Group::Overlay => self.overlay_settings(ui, status),
+        };
+        if changed {
+            self.changed();
+        }
+    }
+
+    fn aim_settings(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         let a = &mut self.cfg.aim;
-        let slider = |ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, name: &str, help: &str| {
-            let moved = ui.add(egui::Slider::new(value, range).text(name)).on_hover_text(help).changed();
-            ui.label(RichText::new(help).small().color(MUTED));
-            ui.add_space(3.0);
-            moved
+        let mut slider = |ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>, name: &str, help: &str| {
+            changed |= described(ui, true, egui::Slider::new(value, range).text(name), help);
         };
-        changed |= slider(ui, &mut a.sensitivity, 0.2..=12.0, "Mouse speed", "How far the camera turns for a mouse movement.");
-        changed |= slider(ui, &mut a.vertical, 0.3..=2.0, "Up/down speed", "Vertical speed compared with sideways.");
-        changed |= slider(ui, &mut a.aim_in, 0.2..=2.0, "Speed while aiming in", "Mouse speed while the aim button (L2) is held, compared with normal.");
-        changed |= slider(ui, &mut a.deadzone, 0.0..=0.6, "Dead zone", "The part of the stick the game ignores. Too high: tiny movements jump. Too low: they do nothing.");
-        changed |= slider(ui, &mut a.curve, 1.0..=3.0, "Response curve", "Undoes the game's stick curve. 1 is off. Higher makes slow movements turn more.");
-        changed |= slider(ui, &mut a.smoothing, 0.0..=2.0, "Smoothing", "1 is normal. Lower reacts faster, higher is steadier.");
+        slider(ui, &mut a.sensitivity, 0.2..=12.0, "Mouse speed", "How far the camera turns for a mouse movement.");
+        slider(ui, &mut a.vertical, 0.3..=2.0, "Up/down speed", "Vertical speed compared with sideways.");
+        slider(ui, &mut a.aim_in, 0.2..=2.0, "Speed while aiming in", "Mouse speed while the aim button (L2) is held, compared with normal.");
+        slider(ui, &mut a.deadzone, 0.0..=0.6, "Dead zone", "The part of the stick the game ignores. Too high: tiny movements jump. Too low: they do nothing.");
+        slider(ui, &mut a.curve, 1.0..=3.0, "Response curve", "Undoes the game's stick curve. 1 is off. Higher makes slow movements turn more.");
+        slider(ui, &mut a.smoothing, 0.0..=2.0, "Smoothing", "1 is normal. Lower reacts faster, higher is steadier.");
         ui.horizontal(|ui| {
             changed |= ui.checkbox(&mut a.invert_y, "Invert up/down").changed();
             ui.add_space(12.0);
@@ -494,51 +579,57 @@ impl App {
                 }
             }
         });
-        ui.horizontal(|ui| {
-            changed |= ui.checkbox(&mut self.cfg.steering.smooth, "Ease steering keys while driving").changed();
-            ui.add_space(12.0);
-            changed |= ui.checkbox(&mut self.cfg.sounds, "Beep when switching").changed();
-        });
-        changed |= ui
-            .checkbox(&mut self.cfg.triggers.wheel_dial, "Mouse wheel sets how far L2 and R2 are pulled")
-            .on_hover_text("For the few things in the game that want a trigger held part of the way, or lowered slowly. Wheel down: less pull. Wheel up: more. The wheel sets the triggers whose keys are held: one alone, so the two can differ, or both together. A held trigger comes down smoothly, however fast the wheel turns, and can go all the way down. With no trigger key held the wheel sets both, ahead of the press. The label on the game shows the pull while it is not all the way, and it goes back to all the way a few seconds after the keys are let go.")
-            .changed();
-        let dial = self.cfg.triggers.wheel_dial;
+        changed
+    }
+
+    fn driving_settings(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = ui.checkbox(&mut self.cfg.steering.smooth, "Ease steering keys while driving").changed();
+        note(ui, "The steering keys lean into the stick the way a thumb does, instead of going to full lock at once.");
+        ui.add_space(6.0);
+        changed |= ui.checkbox(&mut self.cfg.switch_on_name_card, "Switch to driving keys when the vehicle's name appears (experimental)").changed();
+        note(ui, "The get-in key then only gets in. The switch happens when the game shows the vehicle's name above the minimap. Getting out and the switch key work as before.");
+        ui.add_space(6.0);
+        changed |= ui.checkbox(&mut self.cfg.sounds, "Beep when the layout switches").changed();
+        note(ui, "Also when the takeover turns on or off.");
+        changed
+    }
+
+    fn trigger_settings(&mut self, ui: &mut egui::Ui) -> bool {
         let t = &mut self.cfg.triggers;
+        let mut changed = ui.checkbox(&mut t.wheel_dial, "The mouse wheel sets how far L2 and R2 are pulled").changed();
+        note(ui, "Wheel down: less. Wheel up: more. It sets the triggers whose keys are held, one alone or both together, and both when neither is held, ahead of the press.");
+        ui.add_space(3.0);
         let notch = egui::Slider::new(&mut t.step, 0.05..=0.5).step_by(0.05).custom_formatter(|v, _| format!("{:.0}%", v * 100.0)).text("One wheel notch");
-        changed |= ui.add_enabled(dial, notch).on_hover_text("How much one notch of the wheel changes the pull. Larger: fewer notches from all the way to nothing.").changed();
+        changed |= described(ui, t.wheel_dial, notch, "How much one notch changes the pull. Larger: fewer notches from all the way to nothing.");
+        ui.add_space(4.0);
+        ui.label("Keys can do the same.");
+        note(ui, "Click a key on the keyboard above and give it one of the jobs L2 less, L2 more, R2 less, R2 more, L2 + R2 less or L2 + R2 more. The pull moves while the key is held and stays where it is when the key is let go.");
+        ui.add_space(6.0);
         let lowering = egui::Slider::new(&mut t.lower_seconds, 0.0..=4.0).step_by(0.1).suffix(" s").text("Lowering takes");
-        changed |= ui
-            .add_enabled(dial, lowering)
-            .on_hover_text("A held trigger that the wheel lowers takes this long from all the way to nothing, however fast the wheel is turned. For lifting weights: hold both triggers, spin the wheel down, and they come down this slowly. 0 for at once.")
-            .changed();
-        changed |= ui
-            .checkbox(&mut self.cfg.switch_on_name_card, "Switch to driving keys when the vehicle's name appears (experimental)")
-            .on_hover_text("The get-in key then only gets in. The switch happens when the game shows the vehicle's name above the minimap. Getting out and Caps Lock work as before.")
-            .changed();
-        changed |= ui.checkbox(&mut self.cfg.overlay.enabled, "Show the layout in use on top of the game").changed();
-        changed |= ui
-            .add_enabled(self.cfg.overlay.enabled, egui::Checkbox::new(&mut self.cfg.overlay.prompts, "Show my key for button prompts the game puts on screen"))
-            .changed();
-        changed |= ui
-            .add_enabled(self.cfg.overlay.enabled && self.cfg.overlay.prompts, egui::Checkbox::new(&mut self.cfg.overlay.on_prompt, "Draw the key on the prompt itself when it holds still"))
-            .changed();
+        changed |= described(ui, true, lowering, "From all the way to nothing. A held trigger never comes down faster than this, however fast the wheel turns. 0 for at once.");
+        let raising = egui::Slider::new(&mut t.raise_seconds, 0.0..=4.0).step_by(0.1).suffix(" s").text("Raising with a key takes");
+        changed |= described(ui, true, raising, "From nothing to all the way, while a \"more\" key is held. 0 for at once. The wheel always raises at once.");
+        let whole = egui::Slider::new(&mut t.reset_after, 1.0..=15.0).step_by(0.5).suffix(" s").text("A whole pull again after");
+        changed |= described(ui, true, whole, "This long after the trigger keys are let go, they pull all the way again. The label on the game shows the pull while it is not.");
+        changed
+    }
+
+    fn overlay_settings(&mut self, ui: &mut egui::Ui, status: &Status) -> bool {
+        let o = &mut self.cfg.overlay;
+        let mut changed = ui.checkbox(&mut o.enabled, "Show the layout in use on top of the game").changed();
+        changed |= ui.add_enabled(o.enabled, egui::Checkbox::new(&mut o.prompts, "Show my key for button prompts the game puts on screen")).changed();
+        changed |= ui.add_enabled(o.enabled && o.prompts, egui::Checkbox::new(&mut o.on_prompt, "Draw the key on the prompt itself")).changed();
+        note(ui, "Off: the keys are listed in the label at the bottom left instead.");
+        ui.add_space(6.0);
         // How often the game picture is searched, and what that really costs on this computer.
-        let looks = &mut self.cfg.overlay.checks_per_second;
-        let slider = egui::Slider::new(looks, 2.0..=30.0).step_by(1.0).text("Prompt checks a second");
-        changed |= ui
-            .add_enabled(self.cfg.overlay.enabled && self.cfg.overlay.prompts, slider)
-            .on_hover_text("How many times a second the game's picture is searched for button prompts. More makes a key appear sooner and stay on a prompt that moves. Each check takes processor time; if the game's picture stutters, turn it down.")
-            .changed();
+        let checks = egui::Slider::new(&mut o.checks_per_second, 2.0..=30.0).step_by(1.0).text("Prompt checks a second");
         let cost = if status.checks_per_second > 0.0 {
-            format!("Now: {:.0} checks a second, {:.0} ms each. More checks: keys appear sooner and follow a moving prompt.", status.checks_per_second, status.check_ms)
+            format!("Now: {:.0} checks a second, {:.0} ms each. More checks: keys appear sooner and follow a prompt that moves. If the game's picture stutters, turn it down.", status.checks_per_second, status.check_ms)
         } else {
-            "More checks: keys appear sooner and follow a moving prompt, for more processor time. 4 is the calm setting.".to_string()
+            "More checks: keys appear sooner and follow a prompt that moves, for more processor time. 4 is the calm setting.".to_string()
         };
-        ui.label(RichText::new(cost).small().color(MUTED));
-        if changed {
-            self.changed();
-        }
+        changed |= described(ui, o.enabled && o.prompts, checks, &cost);
+        changed
     }
 
     fn deadzone_finder(&mut self, ui: &mut egui::Ui, status: &Status) {
@@ -708,7 +799,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.add_space(4.0);
                 ui.columns(2, |columns| {
-                    self.aim_settings(&mut columns[0], &status);
+                    self.settings(&mut columns[0], &status);
                     let right = &mut columns[1];
                     self.controller(right, &status.pad);
                     if status.mouse_rate > 0.0 {

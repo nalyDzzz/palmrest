@@ -1,6 +1,10 @@
 """Start the app without taking focus, save a picture of its window, close it, report how it exited.
 
 usage: python gui_smoke.py <exe> <out.png> [extra args for the exe...]
+
+Give the exe by its full path. Useful extra args: --dry (look only: no keyboard or mouse is read
+and no controller is plugged in, so it is safe while a game is being played with another copy),
+--at x,y, --group triggers, --select G, --layout drive.
 """
 import ctypes
 import ctypes.wintypes as wt

@@ -33,6 +33,21 @@ impl Mode {
     }
 }
 
+/// The triggers a key eases: one of them, or both together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Triggers {
+    L2,
+    R2,
+    Both,
+}
+
+impl Triggers {
+    /// Whether this covers L2, and whether it covers R2.
+    pub fn covers(self) -> [bool; 2] {
+        [self != Triggers::R2, self != Triggers::L2]
+    }
+}
+
 /// What a key does when it is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -41,6 +56,9 @@ pub enum Action {
     LsDown,
     LsLeft,
     LsRight,
+    /// While held, the keys for these triggers pull them less and less, or (`true`) more and
+    /// more: the same as the wheel as their dial, on keys.
+    Ease(Triggers, bool),
     ModeToggle,
     ModeFoot,
     ModeDrive,
@@ -54,6 +72,12 @@ impl Action {
             "ls_down" => Action::LsDown,
             "ls_left" => Action::LsLeft,
             "ls_right" => Action::LsRight,
+            "l2_less" => Action::Ease(Triggers::L2, false),
+            "l2_more" => Action::Ease(Triggers::L2, true),
+            "r2_less" => Action::Ease(Triggers::R2, false),
+            "r2_more" => Action::Ease(Triggers::R2, true),
+            "triggers_less" => Action::Ease(Triggers::Both, false),
+            "triggers_more" => Action::Ease(Triggers::Both, true),
             "mode_toggle" => Action::ModeToggle,
             "mode_foot" => Action::ModeFoot,
             "mode_drive" => Action::ModeDrive,
@@ -69,13 +93,19 @@ impl Action {
             Action::LsDown => "ls_down",
             Action::LsLeft => "ls_left",
             Action::LsRight => "ls_right",
+            Action::Ease(Triggers::L2, false) => "l2_less",
+            Action::Ease(Triggers::L2, true) => "l2_more",
+            Action::Ease(Triggers::R2, false) => "r2_less",
+            Action::Ease(Triggers::R2, true) => "r2_more",
+            Action::Ease(Triggers::Both, false) => "triggers_less",
+            Action::Ease(Triggers::Both, true) => "triggers_more",
             Action::ModeToggle => "mode_toggle",
             Action::ModeFoot => "mode_foot",
             Action::ModeDrive => "mode_drive",
         }
     }
 
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 31] = [
         Action::Press(Button::Cross),
         Action::Press(Button::Circle),
         Action::Press(Button::Square),
@@ -98,6 +128,12 @@ impl Action {
         Action::Press(Button::Create),
         Action::Press(Button::Touchpad),
         Action::Press(Button::Ps),
+        Action::Ease(Triggers::L2, false),
+        Action::Ease(Triggers::L2, true),
+        Action::Ease(Triggers::R2, false),
+        Action::Ease(Triggers::R2, true),
+        Action::Ease(Triggers::Both, false),
+        Action::Ease(Triggers::Both, true),
         Action::ModeToggle,
         Action::ModeFoot,
         Action::ModeDrive,
@@ -115,6 +151,12 @@ impl Action {
             Action::LsDown => "Left stick down",
             Action::LsLeft => "Left stick left",
             Action::LsRight => "Left stick right",
+            Action::Ease(Triggers::L2, false) => "L2 less",
+            Action::Ease(Triggers::L2, true) => "L2 more",
+            Action::Ease(Triggers::R2, false) => "R2 less",
+            Action::Ease(Triggers::R2, true) => "R2 more",
+            Action::Ease(Triggers::Both, false) => "L2 + R2 less",
+            Action::Ease(Triggers::Both, true) => "L2 + R2 more",
             Action::ModeToggle => "Switch layout",
             Action::ModeFoot => "On-foot layout",
             Action::ModeDrive => "Driving layout",
@@ -174,7 +216,9 @@ impl Default for AimConfig {
 }
 
 /// How far the keys for L2 and R2 pull them. A key is all or nothing, but some things in the
-/// game want a trigger held part of the way, or squeezed slowly.
+/// game want a trigger held part of the way, or squeezed slowly. The pull can be set with the
+/// mouse wheel (`wheel_dial`) and with keys given the jobs `l2_less`, `l2_more`, `r2_less`,
+/// `r2_more`, `triggers_less` and `triggers_more`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TriggerConfig {
@@ -185,24 +229,31 @@ pub struct TriggerConfig {
     pub step: f32,
     /// The pull goes back to all the way this many seconds after the trigger keys were let go.
     pub reset_after: f32,
-    /// A held trigger that the wheel lowers comes down no faster than this: the seconds it
-    /// takes from all the way to nothing. However fast the wheel is turned, the trigger moves
-    /// smoothly, which is what lowering a weight slowly needs. 0 for at once.
+    /// A held trigger that is lowered comes down no faster than this: the seconds it takes from
+    /// all the way to nothing. However fast the wheel is turned, the trigger moves smoothly,
+    /// which is what lowering a weight slowly needs, and a "less" key lowers at this speed
+    /// while it is held. 0 for at once.
     pub lower_seconds: f32,
+    /// A "more" key raises the pull at this speed while it is held: the seconds from nothing
+    /// to all the way. 0 for at once. (The wheel raises at once.)
+    pub raise_seconds: f32,
 }
 
 impl Default for TriggerConfig {
     fn default() -> Self {
-        TriggerConfig { wheel_dial: false, step: 0.1, reset_after: 3.0, lower_seconds: 1.5 }
+        TriggerConfig { wheel_dial: false, step: 0.1, reset_after: 3.0, lower_seconds: 1.5, raise_seconds: 0.5 }
     }
 }
 
-/// The wheel as the triggers' dial, as the mapper needs it (see `TriggerConfig`).
+/// How the triggers' pull is set, as the mapper needs it (see `TriggerConfig`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Dial {
+pub struct Easing {
+    /// The mouse wheel is the triggers' dial.
+    pub wheel: bool,
     pub step: f32,
     pub reset_after: f32,
     pub lower_seconds: f32,
+    pub raise_seconds: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -492,8 +543,8 @@ pub struct Layout {
     drive: Vec<Vec<Action>>,
     pub toggle: Input,
     pub picture: Option<Input>,
-    /// The mouse wheel sets how far the trigger keys pull. `None` if that is turned off.
-    pub dial: Option<Dial>,
+    /// How the pull of the trigger keys is set.
+    pub easing: Easing,
 }
 
 impl Layout {
@@ -537,8 +588,8 @@ impl Layout {
         let foot = build("on foot", &cfg.keys.foot);
         let drive = build("driving", &cfg.keys.drive);
         let t = &cfg.triggers;
-        let dial = t.wheel_dial.then_some(Dial { step: t.step, reset_after: t.reset_after, lower_seconds: t.lower_seconds });
-        (Layout { foot, drive, toggle, picture, dial }, warnings)
+        let easing = Easing { wheel: t.wheel_dial, step: t.step, reset_after: t.reset_after, lower_seconds: t.lower_seconds, raise_seconds: t.raise_seconds };
+        (Layout { foot, drive, toggle, picture, easing }, warnings)
     }
 
     pub fn actions(&self, mode: Mode, input: Input) -> &[Action] {
@@ -553,7 +604,7 @@ impl Layout {
     /// Does this key, button or wheel direction do anything? (The wheel does when it is the
     /// dial for the triggers, bound or not.)
     pub fn is_bound(&self, input: Input) -> bool {
-        (self.dial.is_some() && input.is_wheel()) || !self.actions(Mode::Foot, input).is_empty() || !self.actions(Mode::Drive, input).is_empty()
+        (self.easing.wheel && input.is_wheel()) || !self.actions(Mode::Foot, input).is_empty() || !self.actions(Mode::Drive, input).is_empty()
     }
 }
 
@@ -680,6 +731,7 @@ impl Config {
         self.triggers.step = finite(self.triggers.step, 0.1).clamp(0.02, 0.5);
         self.triggers.reset_after = finite(self.triggers.reset_after, 3.0).clamp(0.5, 60.0);
         self.triggers.lower_seconds = finite(self.triggers.lower_seconds, 1.5).clamp(0.0, 10.0);
+        self.triggers.raise_seconds = finite(self.triggers.raise_seconds, 0.5).clamp(0.0, 10.0);
         for t in &mut self.targets {
             *t = t.trim().to_ascii_lowercase();
         }

@@ -1,6 +1,6 @@
 //! Held keys and mouse buttons -> buttons, triggers and the left stick.
 
-use crate::config::{Action, Layout, Mode};
+use crate::config::{Action, Easing, Layout, Mode};
 use crate::keys::Input;
 use crate::pad::{Button, PadState};
 
@@ -102,7 +102,7 @@ impl Mapper {
             // As the triggers' dial the wheel does nothing else, except that a wheel direction
             // with a job of its own keeps that job while no trigger key is held.
             let held = self.triggers_held();
-            if self.layout.dial.is_some() && (held != [false, false] || self.doing(input).is_empty()) {
+            if self.layout.easing.wheel && (held != [false, false] || self.doing(input).is_empty()) {
                 self.turn_dial(input == Input::WHEEL_UP, held, now);
                 return None;
             }
@@ -133,13 +133,13 @@ impl Mapper {
     /// wheel sets both ahead of the press, and then never to less than one notch's worth: a key
     /// that did nothing at all would only be a puzzle.
     fn turn_dial(&mut self, up: bool, held: [bool; 2], now: f64) {
-        let Some(dial) = self.layout.dial else { return };
+        let step = self.layout.easing.step;
         for i in 0..2 {
             if held[i] || held == [false, false] {
-                let wanted = self.pull[i] + if up { dial.step } else { -dial.step };
-                let least = if held[i] { 0.0 } else { dial.step };
+                let wanted = self.pull[i] + if up { step } else { -step };
+                let least = if held[i] { 0.0 } else { step };
                 // Whole notches, so that as many up as down ends where it began.
-                self.pull[i] = ((wanted / dial.step).round() * dial.step).clamp(least, 1.0);
+                self.pull[i] = ((wanted / step).round() * step).clamp(least, 1.0);
             }
         }
         self.pull_used = now;
@@ -206,6 +206,8 @@ impl Mapper {
         self.pulses.retain(|p| p.1 > now);
         let mut pad = PadState::default();
         let (mut lx, mut ly) = (0.0f32, 0.0f32);
+        // Keys that ease the triggers: per trigger, more (+) or less (-).
+        let mut easing = [0i8; 2];
         let held = (0..Input::COUNT).filter(|&i| self.held[i]).map(|i| Input(i as u16));
         for input in held.chain(self.pulses.iter().map(|p| p.0)) {
             for act in self.doing(input) {
@@ -215,6 +217,11 @@ impl Mapper {
                     Action::LsDown => ly -= 1.0,
                     Action::LsLeft => lx -= 1.0,
                     Action::LsRight => lx += 1.0,
+                    Action::Ease(which, more) => {
+                        for (way, covered) in easing.iter_mut().zip(which.covers()) {
+                            *way += if !covered { 0 } else if *more { 1 } else { -1 };
+                        }
+                    }
                     Action::ModeToggle | Action::ModeFoot | Action::ModeDrive => {}
                 }
             }
@@ -222,16 +229,25 @@ impl Mapper {
         // The triggers go as far as the dial says, and the dial lets go of itself: a pull left
         // at a third would make the next shot or the next start a puzzle.
         let pulled = [pad.pressed(Button::L2), pad.pressed(Button::R2)];
-        match self.layout.dial {
-            Some(_) if pulled != [false, false] => self.pull_used = now,
-            Some(dial) if now - self.pull_used <= dial.reset_after as f64 => {}
-            _ => self.pull = [1.0; 2],
+        let Easing { step, reset_after, lower_seconds, raise_seconds, .. } = self.layout.easing;
+        if pulled != [false, false] || easing != [0, 0] {
+            self.pull_used = now;
+        } else if now - self.pull_used > reset_after as f64 {
+            self.pull = [1.0; 2];
         }
-        let lower_seconds = self.layout.dial.map_or(0.0, |dial| dial.lower_seconds);
         for (i, trigger) in TRIGGERS.into_iter().enumerate() {
+            // A key that eases this trigger moves its pull for as long as it is held, and the
+            // pull stays where it is when the key is let go. As with the wheel, a trigger that
+            // is held can go all the way down, and one that is not, down to one notch.
+            if easing[i] > 0 {
+                self.pull[i] = if raise_seconds > 0.0 { (self.pull[i] + dt as f32 / raise_seconds).min(1.0) } else { 1.0 };
+            } else if easing[i] < 0 {
+                let least = if pulled[i] { 0.0 } else { step };
+                self.pull[i] = if lower_seconds > 0.0 { (self.pull[i] - dt as f32 / lower_seconds).max(least) } else { least };
+            }
             if !pulled[i] {
                 // Let go of at the bottom: the next press is a whole pull again, a lift.
-                if self.pull[i] <= 0.0 {
+                if self.pull[i] < step / 2.0 && easing[i] == 0 {
                     self.pull[i] = 1.0;
                 }
                 self.travel[i] = self.pull[i];
@@ -282,7 +298,7 @@ impl Mapper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, Triggers};
 
     fn mapper() -> Mapper {
         let (layout, warnings) = Layout::compile(&Config::default());
@@ -433,11 +449,73 @@ mod tests {
         assert_eq!(tenths(&m), [9, 9], "and a little longer, for the next press");
         m.state(53.5, 0.001, (0.0, 0.0));
         assert_eq!(tenths(&m), [10, 10]);
-        // Turning the dial off puts it back at once.
+        // With the wheel's dial turned off the wheel no longer sets it, and what was set runs out as usual.
         m.input(Input::WHEEL_DOWN, true, 60.0);
         assert_eq!(tenths(&m), [9, 9]);
         m.set_layout(Layout::compile(&Config::default()).0, true);
-        m.state(60.0, 0.001, (0.0, 0.0));
+        m.input(Input::WHEEL_DOWN, true, 60.5);
+        m.state(60.5, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [9, 9]);
+        m.state(63.5, 0.001, (0.0, 0.0));
+        assert_eq!(tenths(&m), [10, 10]);
+    }
+
+    #[test]
+    fn keys_can_ease_the_triggers_without_the_wheel() {
+        // No wheel dial: G lowers both, T raises both, B lowers L2 alone.
+        let mut cfg = Config::default();
+        cfg.bind(Mode::Foot, key("G"), &[Action::Ease(Triggers::Both, false)]);
+        cfg.bind(Mode::Foot, key("T"), &[Action::Ease(Triggers::Both, true)]);
+        cfg.bind(Mode::Foot, key("B"), &[Action::Ease(Triggers::L2, false)]);
+        let (layout, warnings) = Layout::compile(&cfg);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let mut m = Mapper::new(layout, true);
+        let mut now = 0.0;
+        let mut run = |m: &mut Mapper, seconds: f64| {
+            let mut p = PadState::default();
+            for _ in 0..(seconds * 1000.0).round() as u32 {
+                now += 0.001;
+                p = m.state(now, 0.001, (0.0, 0.0));
+            }
+            p
+        };
+        // Lift with both, then hold G: both come down together, smoothly, for as long as it is held.
+        m.input(Input::MOUSE_LEFT, true, 0.0);
+        m.input(Input::MOUSE_RIGHT, true, 0.0);
+        assert_eq!(run(&mut m, 0.1).l2, 1.0);
+        m.input(key("G"), true, 0.1);
+        let p = run(&mut m, 0.75);
+        assert!((p.l2 - 0.5).abs() < 0.01 && p.l2 == p.r2, "half way after half the lowering time: {}", p.l2);
+        // Let go of G: they stay where they are.
+        m.input(key("G"), false, 0.0);
+        let p = run(&mut m, 1.0);
+        assert!((p.l2 - 0.5).abs() < 0.01 && p.pressed(Button::L2));
+        // B takes L2 further down alone.
+        m.input(key("B"), true, 0.0);
+        let p = run(&mut m, 0.3);
+        m.input(key("B"), false, 0.0);
+        assert!((p.l2 - 0.3).abs() < 0.01 && (p.r2 - 0.5).abs() < 0.01, "{} {}", p.l2, p.r2);
+        // G again, to the bottom: let go of, with the mouse buttons still down.
+        m.input(key("G"), true, 0.0);
+        let p = run(&mut m, 1.0);
+        m.input(key("G"), false, 0.0);
+        assert!(!p.pressed(Button::L2) && !p.pressed(Button::R2));
+        // T lifts: up again, faster than down.
+        m.input(key("T"), true, 0.0);
+        let p = run(&mut m, 0.25);
+        assert!((p.r2 - 0.5).abs() < 0.01, "half way after half the raising time: {}", p.r2);
+        let p = run(&mut m, 0.3);
+        m.input(key("T"), false, 0.0);
+        assert_eq!((p.l2, p.r2), (1.0, 1.0));
+        // Ahead of a press a key lowers the pull to one notch at most, and it is whole again
+        // a while after everything is let go.
+        m.input(Input::MOUSE_LEFT, false, 0.0);
+        m.input(Input::MOUSE_RIGHT, false, 0.0);
+        m.input(key("G"), true, 0.0);
+        run(&mut m, 3.0);
+        m.input(key("G"), false, 0.0);
+        assert_eq!(tenths(&m), [1, 1]);
+        run(&mut m, 3.1);
         assert_eq!(tenths(&m), [10, 10]);
     }
 

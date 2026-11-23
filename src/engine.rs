@@ -167,6 +167,9 @@ pub fn hint_stays(gap: f64) -> f64 {
 }
 
 fn connect() -> Result<Box<dyn Output>, String> {
+    if win::DRY.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("no controller: the window was opened only to be looked at (--dry)".to_string());
+    }
     VirtualDs4::connect().map(|d| Box::new(d) as Box<dyn Output>)
 }
 
