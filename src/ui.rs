@@ -466,7 +466,7 @@ impl App {
         });
     }
 
-    fn aim_settings(&mut self, ui: &mut egui::Ui) {
+    fn aim_settings(&mut self, ui: &mut egui::Ui, status: &Status) {
         ui.label(RichText::new("AIM").font(self.font(13.0)).color(MUTED));
         ui.add_space(2.0);
         let mut changed = false;
@@ -510,6 +510,19 @@ impl App {
         changed |= ui
             .add_enabled(self.cfg.overlay.enabled && self.cfg.overlay.prompts, egui::Checkbox::new(&mut self.cfg.overlay.on_prompt, "Draw the key on the prompt itself when it holds still"))
             .changed();
+        // How often the game picture is searched, and what that really costs on this computer.
+        let looks = &mut self.cfg.overlay.checks_per_second;
+        let slider = egui::Slider::new(looks, 2.0..=30.0).step_by(1.0).text("Prompt checks a second");
+        changed |= ui
+            .add_enabled(self.cfg.overlay.enabled && self.cfg.overlay.prompts, slider)
+            .on_hover_text("How many times a second the game's picture is searched for button prompts. More makes a key appear sooner and stay on a prompt that moves. Each check takes processor time; if the game's picture stutters, turn it down.")
+            .changed();
+        let cost = if status.checks_per_second > 0.0 {
+            format!("Now: {:.0} checks a second, {:.0} ms each. More checks: keys appear sooner and follow a moving prompt.", status.checks_per_second, status.check_ms)
+        } else {
+            "More checks: keys appear sooner and follow a moving prompt, for more processor time. 4 is the calm setting.".to_string()
+        };
+        ui.label(RichText::new(cost).small().color(MUTED));
         if changed {
             self.changed();
         }
@@ -682,7 +695,7 @@ impl eframe::App for App {
                 ui.separator();
                 ui.add_space(4.0);
                 ui.columns(2, |columns| {
-                    self.aim_settings(&mut columns[0]);
+                    self.aim_settings(&mut columns[0], &status);
                     let right = &mut columns[1];
                     self.controller(right, &status.pad);
                     if status.mouse_rate > 0.0 {

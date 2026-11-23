@@ -70,8 +70,14 @@ impl Default for OverlayState {
     }
 }
 
-/// How often the label checks whether it should change or move, in milliseconds.
-const CHECK_EVERY: u32 = 50;
+/// How often the overlay checks whether it should change or move, in milliseconds: often enough
+/// that a hint keeps up with a prompt that moves.
+const CHECK_EVERY: u32 = 16;
+/// Every this many checks the overlay's windows are put back on top of the game, in case the
+/// game put itself above them.
+const ON_TOP_EVERY: u32 = 15;
+/// Checks made so far. Only the overlay thread uses it.
+static CHECKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// The stencils are drawn this many times larger and shrunk, which smooths their edges.
 const SMOOTH: i32 = 3;
 const BACKING: (u8, u8, u8) = (0x12, 0x14, 0x1C);
@@ -158,7 +164,8 @@ unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lpar
 /// Brings the label in line with the state: shown or hidden, right text, right place.
 unsafe fn refresh(hwnd: HWND) {
     let state = STATE.get().and_then(|s| s.lock().ok().map(|s| s.clone())).unwrap_or_default();
-    unsafe { refresh_spots(&state) };
+    let on_top = CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % ON_TOP_EVERY == 0;
+    unsafe { refresh_spots(&state, on_top) };
     let mut shown = SHOWN.lock().unwrap_or_else(|p| p.into_inner());
     let place = if state.show { unsafe { picture_rect(state.game_window) } } else { None };
     let Some(picture) = place else {
@@ -196,12 +203,14 @@ unsafe fn refresh(hwnd: HWND) {
             let _ = windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &mut own);
             let at = (picture.left + inset, picture.bottom - margin - (own.bottom - own.top));
             if at != s.at {
-                let _ = UpdateLayeredWindow(hwnd, None, Some(&POINT { x: at.0, y: at.1 }), None, None, None, COLORREF(0), None, ULW_ALPHA);
+                let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), at.0, at.1, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
                 s.at = at;
             }
         }
         // Stay above the game even if it re-asserts itself.
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        if on_top || label.is_some() {
+            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
 }
 
@@ -253,7 +262,7 @@ fn spread(places: &mut [Place], left: i32, right: i32, gap: i32) {
 /// Brings the on-prompt hints in line with the state: one small window per prompt that holds
 /// still, covering the prompt (the key takes the place of the button's mark) and kept inside
 /// the game picture, so a prompt at the edge of the screen still gets a whole hint.
-unsafe fn refresh_spots(state: &OverlayState) {
+unsafe fn refresh_spots(state: &OverlayState, on_top: bool) {
     unsafe {
         let mut pool = SPOT_WINDOWS.lock().unwrap_or_else(|p| p.into_inner());
         let picture = if state.show { picture_rect(state.game_window) } else { None };
@@ -305,11 +314,13 @@ unsafe fn refresh_spots(state: &OverlayState) {
                 let (at, extent) = (POINT { x, y }, SIZE { cx: w, cy: h });
                 let _ = UpdateLayeredWindow(window, None, Some(&at), Some(&extent), Some(surface.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
                 let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
-            } else if shown.as_ref().is_some_and(|(_, at)| *at != (x, y)) {
-                let _ = UpdateLayeredWindow(window, None, Some(&POINT { x, y }), None, None, None, COLORREF(0), None, ULW_ALPHA);
+            }
+            // Moves the hint with its prompt, and keeps it above the game even if that re-asserts
+            // itself. (A layered window keeps its picture when it is moved this way.)
+            if on_top || hint.is_some() || shown.as_ref().is_none_or(|(_, at)| *at != (x, y)) {
+                let _ = SetWindowPos(window, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
             }
             *shown = Some((state.spots[i].clone(), (x, y)));
-            let _ = SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 }

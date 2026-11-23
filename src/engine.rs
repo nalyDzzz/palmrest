@@ -10,7 +10,7 @@ use crate::keys::Input;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
 use crate::overlay::{OverlayState, Spot};
-use crate::prompts::{Found, Glyph, Steady};
+use crate::prompts::{Found, Glyph, Steady, Tracks};
 use crate::pad::{Button, PadState};
 use crate::win;
 
@@ -22,8 +22,11 @@ const IDLE_TICK: f64 = 0.02;
 const FOREGROUND_EVERY: f64 = 0.05;
 /// An unchanged controller state is sent again this often.
 const RESEND_EVERY: f64 = 0.1;
-/// How often the game picture is searched for button prompts.
-const LOOK_EVERY: f64 = 0.25;
+/// A key hint stays this long after its prompt was last seen, or a look and a half if that is
+/// longer: prompts drop out for a moment while the camera moves.
+const HINT_STAYS: f64 = 0.3;
+/// A prompt listed in the label is dropped after going unseen for about this long.
+const LISTED_STAYS: f64 = 0.75;
 
 /// Everything sent to the engine: input events from the hooks, and requests from the window.
 #[derive(Debug)]
@@ -55,6 +58,8 @@ pub struct Look {
     pub prompts: Vec<Found>,
     /// The vehicle name card is showing.
     pub name_card: bool,
+    /// How long copying the picture and searching it took, in seconds.
+    pub took: f32,
 }
 
 /// What the window shows.
@@ -80,6 +85,10 @@ pub struct Status {
     /// How the last save-picture press went, and how many pictures were saved this session.
     pub picture: Option<Result<String, String>>,
     pub pictures_saved: u32,
+    /// How many times a second the game picture is really being searched for prompts (0: not
+    /// at the moment), and how long one search takes, in milliseconds.
+    pub checks_per_second: f32,
+    pub check_ms: f32,
 }
 
 impl Status {
@@ -112,6 +121,8 @@ impl Engine {
             held: [0; Input::COUNT.div_ceil(64)],
             picture: None,
             pictures_saved: 0,
+            checks_per_second: 0.0,
+            check_ms: 0.0,
         }));
         win::start_input(tx.clone())?;
         let shared = status.clone();
@@ -148,6 +159,11 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// How long a hint stays after its prompt was last seen, when looks come `gap` seconds apart.
+pub fn hint_stays(gap: f64) -> f64 {
+    (1.5 * gap).max(HINT_STAYS)
 }
 
 fn connect() -> Result<Box<dyn Output>, String> {
@@ -225,8 +241,10 @@ fn run(
     let (mut prompts, mut next_look) = (Steady::default(), 0.0f64);
     // The name card: looks in a row that saw it, and whether it counts as showing.
     let (mut card_looks, mut card_showing) = (0u8, false);
-    // Prompts found by the last look, and those of them that were in the same place the look before.
-    let (mut last_found, mut still): (Vec<Found>, Vec<Found>) = (Vec::new(), Vec::new());
+    // The prompts on screen, followed from look to look, for the hints drawn on them.
+    let mut tracks = Tracks::default();
+    // When the last look came in, the usual time from one look to the next, and how long a look takes.
+    let (mut last_look, mut look_gap, mut look_took) = (0.0f64, 0.0f64, 0.0f32);
     mapper.set_hold_get_in(cfg.switch_on_name_card);
 
     'run: loop {
@@ -322,11 +340,16 @@ fn run(
                         let mut marks: Vec<Glyph> = look.prompts.iter().map(|f| f.glyph).collect();
                         marks.sort();
                         marks.dedup();
+                        // How fast the looks really come: as asked, or as fast as the picture can be searched.
+                        let now = win::now();
+                        let gap = (now - last_look).clamp(0.0, 1.0);
+                        look_gap = if look_gap == 0.0 || last_look == 0.0 { 1.0 / cfg.overlay.checks_per_second as f64 } else { 0.8 * look_gap + 0.2 * gap };
+                        last_look = now;
+                        look_took = if look_took == 0.0 { look.took } else { 0.8 * look_took + 0.2 * look.took };
+                        prompts.set_patience((LISTED_STAYS / look_gap).ceil().min(200.0) as u8);
                         prompts.look(&marks);
-                        // A prompt in the same place two looks running is holding still: its hint can sit on it.
-                        let near = |a: &Found, b: &Found| a.glyph == b.glyph && (a.x - b.x).abs() < 0.6 * a.diameter && (a.y - b.y).abs() < 0.6 * a.diameter;
-                        still = look.prompts.iter().filter(|f| last_found.iter().any(|p| near(f, p))).copied().collect();
-                        last_found = look.prompts;
+                        tracks.look(&look.prompts, now, hint_stays(look_gap));
+                        next_status = 0.0; // tell the overlay at once: a hint should not trail its prompt
                         // Hot-wiring and the like: while the game shows the left stick, give it the stick.
                         mapper.set_stick_wanted(prompts.shown().contains(&Glyph::LeftStick));
                         // The card counts as showing after two looks in a row, and acts once, when it appears.
@@ -370,8 +393,8 @@ fn run(
                     prompts.clear();
                     mapper.set_stick_wanted(false);
                     (card_looks, card_showing) = (0, false);
-                    last_found.clear();
-                    still.clear();
+                    tracks.clear();
+                    (last_look, look_gap, look_took) = (0.0, 0.0, 0.0);
                 }
             }
             game_window = if live { hwnd } else { 0 };
@@ -384,14 +407,13 @@ fn run(
         // The picture is looked at for prompt hints, and for the name card if that switches layout.
         let hints = cfg.overlay.enabled && cfg.overlay.prompts;
         if live && (hints || cfg.switch_on_name_card) && now >= next_look {
-            next_look = now + LOOK_EVERY;
+            next_look = now + 1.0 / cfg.overlay.checks_per_second as f64;
             let _ = looker.try_send(game_window); // dropped if the last look is still running
         }
         if !hints {
             prompts.clear();
             mapper.set_stick_wanted(false);
-            last_found.clear();
-            still.clear();
+            tracks.clear();
         }
 
         let mut pad = PadState::default();
@@ -431,9 +453,10 @@ fn run(
             }
             if let Ok(mut o) = overlay.lock() {
                 let mode = mapper.mode();
-                // Prompts holding still get their key drawn on them; the others are listed in the label.
+                // Prompts that can be followed get their key drawn on them; the others are listed in the label.
                 let spots: Vec<Spot> = if cfg.overlay.on_prompt {
-                    still
+                    tracks
+                        .there(now, hint_stays(look_gap))
                         .iter()
                         .filter_map(|f| {
                             let key = key_on_prompt(&cfg, mode, f.glyph)?;
@@ -462,6 +485,8 @@ fn run(
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
                 s.held = if live { mapper.held_bits() } else { [0; Input::COUNT.div_ceil(64)] };
+                let looking = last_look > 0.0 && now - last_look < 1.5 && look_gap > 0.0;
+                (s.checks_per_second, s.check_ms) = if looking { ((1.0 / look_gap) as f32, look_took * 1000.0) } else { (0.0, 0.0) };
                 if s.pictures_saved != pictures_saved || s.picture != picture {
                     s.pictures_saved = pictures_saved;
                     s.picture = picture.clone();

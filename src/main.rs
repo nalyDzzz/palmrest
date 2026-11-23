@@ -63,16 +63,29 @@ fn main() {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let looker = win::start_prompt_watcher(tx);
-        let mut steady = prompts::Steady::default();
+        // `--checks <n>`: looks a second, as the setting in the window.
+        let checks = std::env::args().position(|a| a == "--checks").and_then(|i| std::env::args().nth(i + 1)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(4.0);
+        let stays = engine::hint_stays(1.0 / checks);
+        let (mut steady, mut tracks) = (prompts::Steady::default(), prompts::Tracks::default());
+        let (mut looks, mut took) = (0u32, 0.0f32);
+        let mut last_line = String::new();
         let started = std::time::Instant::now();
+        let mut next = 0.0f64;
         while started.elapsed() < std::time::Duration::from_secs(4) {
-            let _ = looker.try_send(hwnd);
-            if let Ok(engine::Msg::Look(Some(look))) = rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            if started.elapsed().as_secs_f64() >= next {
+                next += 1.0 / checks;
+                let _ = looker.try_send(hwnd);
+            }
+            if let Ok(engine::Msg::Look(Some(look))) = rx.recv_timeout(std::time::Duration::from_millis(2)) {
+                let now = started.elapsed().as_secs_f64();
                 let found: Vec<prompts::Glyph> = look.prompts.iter().map(|f| f.glyph).collect();
                 steady.look(&found);
-                // Every prompt gets its hint drawn on it (the test picture does not move).
-                let spots: Vec<overlay::Spot> = look
-                    .prompts
+                tracks.look(&look.prompts, now, stays);
+                looks += 1;
+                took += look.took;
+                // Every prompt that is followed gets its hint drawn on it, as in play.
+                let spots: Vec<overlay::Spot> = tracks
+                    .there(now, stays)
                     .iter()
                     .filter_map(|f| {
                         let key = engine::key_on_prompt(&cfg, config::Mode::Foot, f.glyph)?;
@@ -80,13 +93,18 @@ fn main() {
                     })
                     .take(overlay::SPOTS)
                     .collect();
-                println!("found {found:?} name card {} -> on-prompt hints {:?}", look.name_card, spots.iter().map(|s| (s.key.as_str(), s.x, s.y)).collect::<Vec<_>>());
+                // (Said only when it changes: whoever reads this may not read it until the end.)
+                let line = format!("found {found:?} name card {} -> on-prompt hints {:?}", look.name_card, spots.iter().map(|s| (s.key.as_str(), s.x, s.y)).collect::<Vec<_>>());
+                if line != last_line {
+                    println!("{line}");
+                    last_line = line;
+                }
                 if let Ok(mut s) = state.lock() {
                     s.spots = spots;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
         }
+        println!("{looks} looks in 4 seconds ({checks} a second asked for), {:.1} ms each", took / looks.max(1) as f32 * 1000.0);
         return println!("done");
     }
     // Test aid: `--save-picture <window handle> <file>` saves that window's picture once.

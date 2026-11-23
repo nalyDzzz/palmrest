@@ -368,9 +368,14 @@ pub fn start_prompt_watcher(tx: Sender<Msg>) -> std::sync::mpsc::SyncSender<isiz
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         }
         while let Ok(hwnd) = asked.recv() {
+            let started = now();
             let found = grab_window(hwnd).map(|(w, h, rgb)| {
                 let (w, h) = (w as usize, h as usize);
-                crate::engine::Look { prompts: crate::prompts::find(&rgb, w, h), name_card: crate::prompts::name_card(&rgb, w, h) }
+                // The search's own threads keep out of the game's way like this one does.
+                let prompts = crate::prompts::find_with(&rgb, w, h, || unsafe {
+                    let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                });
+                crate::engine::Look { prompts, name_card: crate::prompts::name_card(&rgb, w, h), took: (now() - started) as f32 }
             });
             if tx.send(Msg::Look(found)).is_err() {
                 break;

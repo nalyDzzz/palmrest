@@ -195,11 +195,14 @@ pub struct OverlayConfig {
     pub prompts: bool,
     /// When a prompt holds still, draw its key right on it instead of listing it in the label.
     pub on_prompt: bool,
+    /// How many times a second the game picture is searched for prompts. More makes hints
+    /// appear sooner and follow a moving prompt more closely, and costs more processor time.
+    pub checks_per_second: f32,
 }
 
 impl Default for OverlayConfig {
     fn default() -> Self {
-        OverlayConfig { enabled: true, prompts: true, on_prompt: true }
+        OverlayConfig { enabled: true, prompts: true, on_prompt: true, checks_per_second: 4.0 }
     }
 }
 
@@ -633,6 +636,7 @@ impl Config {
         a.curve = finite(a.curve, 1.8).clamp(0.5, 4.0);
         a.smoothing = finite(a.smoothing, 1.0).clamp(0.0, 4.0);
         self.game_fps = finite(self.game_fps, 30.0).clamp(20.0, 240.0);
+        self.overlay.checks_per_second = finite(self.overlay.checks_per_second, 4.0).clamp(1.0, 30.0);
         for t in &mut self.targets {
             *t = t.trim().to_ascii_lowercase();
         }
@@ -789,5 +793,8 @@ mod tests {
         assert_eq!(cfg.aim.deadzone, 0.9);
         assert_eq!(cfg.game_fps, 20.0);
         assert_eq!(cfg.targets, vec!["veyra_qml_ui.exe".to_string()]);
+        cfg.overlay.checks_per_second = 500.0;
+        cfg.sanitize();
+        assert_eq!(cfg.overlay.checks_per_second, 30.0);
     }
 }

@@ -149,13 +149,26 @@ pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
 /// Turns single looks into a steady list: a prompt is shown once two looks in a row have found
 /// it, and dropped once three in a row have not. Prompts flicker as the camera moves, and a
 /// hint that blinks is worse than none.
-#[derive(Default)]
 pub struct Steady {
     /// Per mark: looks in a row that found it, looks in a row that did not, and whether it is shown.
     marks: [(u8, u8, bool); Glyph::ALL.len()],
+    /// Looks in a row that must miss a mark before it is dropped.
+    patience: u8,
+}
+
+impl Default for Steady {
+    fn default() -> Self {
+        Steady { marks: Default::default(), patience: 3 }
+    }
 }
 
 impl Steady {
+    /// How many looks in a row must miss a mark before it is dropped: three unless the looks
+    /// come quickly, when three would be over in a blink.
+    pub fn set_patience(&mut self, looks: u8) {
+        self.patience = looks.max(3);
+    }
+
     pub fn look(&mut self, found: &[Glyph]) {
         for (i, glyph) in Glyph::ALL.iter().enumerate() {
             let (hits, misses, shown) = &mut self.marks[i];
@@ -166,18 +179,70 @@ impl Steady {
             } else {
                 *misses = misses.saturating_add(1);
                 *hits = 0;
-                *shown &= *misses < 3;
+                *shown &= *misses < self.patience;
             }
         }
     }
 
     pub fn clear(&mut self) {
-        *self = Steady::default();
+        self.marks = Default::default();
     }
 
     /// The marks to show, always in the same order.
     pub fn shown(&self) -> Vec<Glyph> {
         Glyph::ALL.iter().zip(&self.marks).filter(|(_, m)| m.2).map(|(g, _)| *g).collect()
+    }
+}
+
+/// Follows prompts from look to look, so that a key hint can sit on a prompt and move with it.
+///
+/// A prompt found close to where one of the same kind was at the look before is the same
+/// prompt. It counts as there once two looks have found it: a single look can be scenery that
+/// happens to look like a button. It stays for a short while after it was last seen: prompts
+/// drop out for a look or two while the camera moves. Its place only changes when it has moved
+/// by more than a pixel or two, so that a hint on it does not shimmer.
+#[derive(Default)]
+pub struct Tracks {
+    /// Each prompt as it is shown, the looks that found it, and when the last of them was.
+    list: Vec<(Found, u8, f64)>,
+}
+
+impl Tracks {
+    /// Takes in what a look at time `now` found. Prompts not seen for `keep` seconds are forgotten.
+    pub fn look(&mut self, found: &[Found], now: f64, keep: f64) {
+        self.list.retain(|(_, _, seen)| now - seen <= keep);
+        let known = self.list.len();
+        let mut taken = vec![false; known];
+        for f in found {
+            // The same prompt has moved less than its own width since the last look.
+            let off = |shown: &Found| (shown.x - f.x).abs().max((shown.y - f.y).abs());
+            let nearest = (0..known).filter(|&i| !taken[i] && self.list[i].0.glyph == f.glyph && off(&self.list[i].0) < f.diameter).min_by(|&a, &b| off(&self.list[a].0).total_cmp(&off(&self.list[b].0)));
+            match nearest {
+                Some(i) => {
+                    taken[i] = true;
+                    let (shown, looks, seen) = &mut self.list[i];
+                    if off(shown) > 1.5 {
+                        (shown.x, shown.y) = (f.x, f.y);
+                    }
+                    if (shown.diameter - f.diameter).abs() > 2.0 {
+                        shown.diameter = f.diameter;
+                    }
+                    shown.score = f.score;
+                    *looks = looks.saturating_add(1);
+                    *seen = now;
+                }
+                None => self.list.push((*f, 1, now)),
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.list.clear();
+    }
+
+    /// The prompts that are there at `now`, always in the same order.
+    pub fn there(&self, now: f64, keep: f64) -> Vec<Found> {
+        self.list.iter().filter(|(_, looks, seen)| *looks >= 2 && now - seen <= keep).map(|(shown, _, _)| *shown).collect()
     }
 }
 
@@ -593,17 +658,36 @@ fn classify(seen: &Grid, outline: Outline) -> Option<(Glyph, f32)> {
     (best.1 >= MATCH_AT_LEAST && best.1 - second.1 >= LEAD_AT_LEAST).then_some(best)
 }
 
-/// Finds the prompts in a picture given as RGB bytes, rows from the top.
-pub fn find(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
+#[cfg(test)]
+fn find(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
+    find_with(rgb, w, h, || {})
+}
+
+/// Finds the prompts in a picture given as RGB bytes, rows from the top. The brightness levels
+/// are searched side by side, each on a thread of its own, which takes about half the time of
+/// one after the other; `on_thread` runs first on each of those threads (to lower its priority,
+/// say).
+pub fn find_with(rgb: &[u8], w: usize, h: usize, on_thread: impl Fn() + Sync) -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
     if w < 320 || h < 180 || rgb.len() < w * h * 3 {
         return found;
     }
     let lum: Vec<u8> = rgb.chunks_exact(3).take(w * h).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8).collect();
-    let mut area = vec![0u32; w * h];
-    let mut stack: Vec<u32> = Vec::new();
-    for level in LEVELS {
-        for disc in prompts_at(&lum, w, h, level, &mut area, &mut stack) {
+    let (lum, on_thread) = (&lum, &on_thread);
+    let per_level: Vec<Vec<Found>> = std::thread::scope(|scope| {
+        let searches: Vec<_> = LEVELS
+            .iter()
+            .map(|&level| {
+                scope.spawn(move || {
+                    on_thread();
+                    prompts_at(lum, w, h, level)
+                })
+            })
+            .collect();
+        searches.into_iter().map(|search| search.join().unwrap_or_default()).collect()
+    });
+    for at_level in per_level {
+        for disc in at_level {
             // The same face usually stands alone at more than one level: keep its best reading.
             match found.iter_mut().find(|f| (f.x - disc.x).abs() < disc.diameter / 2.0 && (f.y - disc.y).abs() < disc.diameter / 2.0) {
                 Some(seen) if seen.score < disc.score => *seen = disc,
@@ -615,17 +699,18 @@ pub fn find(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
     found
 }
 
-/// The prompts whose face stands alone when the picture is cut at `level`. `area` and `stack`
-/// are scratch space, reused between levels.
-fn prompts_at(lum: &[u8], w: usize, h: usize, level: u8, area: &mut [u32], stack: &mut Vec<u32>) -> Vec<Found> {
+/// The prompts whose face stands alone when the picture is cut at `level`.
+fn prompts_at(lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Found> {
     let mut found = Vec::new();
+    // Which connected area each pixel belongs to (0: none yet), and the pixels still to walk.
+    let mut area = vec![0u32; w * h];
+    let mut stack: Vec<u32> = Vec::new();
     let scale = h as f32 / 1080.0;
     let (min_d, max_d) = ((MIN_DIAMETER * scale) as i32, (MAX_DIAMETER * scale).ceil() as i32);
     // How far outside a face its rim is looked for, and how far from the picture's edge a face
     // must stay so that there is something to look at.
     let rim_out = 1.5 * scale.max(1.0);
     let edge = rim_out.ceil() as usize + 3;
-    area.fill(0);
     let mut next_area = 0u32;
     for start in 0..w * h {
         if lum[start] < level || area[start] != 0 {
@@ -794,6 +879,36 @@ mod tests {
     }
 
     #[test]
+    fn a_followed_prompt_needs_two_looks_moves_with_its_prompt_and_stays_a_moment() {
+        let at = |glyph, x: f32, y: f32| Found { glyph, x, y, diameter: 26.0, score: 0.9 };
+        let places = |t: &Tracks, now| t.there(now, 0.3).iter().map(|f| (f.glyph, f.x, f.y)).collect::<Vec<_>>();
+        let mut t = Tracks::default();
+        t.look(&[at(Glyph::Cross, 100.0, 100.0)], 0.0, 0.3);
+        assert!(places(&t, 0.0).is_empty(), "one look is not enough");
+        t.look(&[at(Glyph::Cross, 101.0, 100.0)], 0.1, 0.3);
+        assert_eq!(places(&t, 0.1), [(Glyph::Cross, 100.0, 100.0)], "a pixel of wobble does not move it");
+        t.look(&[at(Glyph::Cross, 112.0, 104.0)], 0.2, 0.3);
+        assert_eq!(places(&t, 0.2), [(Glyph::Cross, 112.0, 104.0)], "it follows its prompt");
+        // Missed for a look or two: still there. Missed for longer than the stay: gone.
+        t.look(&[], 0.3, 0.3);
+        assert_eq!(places(&t, 0.45).len(), 1);
+        assert!(places(&t, 0.55).is_empty());
+        t.look(&[at(Glyph::Cross, 112.0, 104.0)], 0.6, 0.3);
+        assert!(places(&t, 0.6).is_empty(), "after it is forgotten it needs two looks again");
+        // A jump further than the prompt's own width is another prompt; so is another mark in the same place.
+        let mut t = Tracks::default();
+        t.look(&[at(Glyph::Cross, 100.0, 100.0)], 0.0, 0.3);
+        t.look(&[at(Glyph::Cross, 160.0, 100.0), at(Glyph::Circle, 100.0, 100.0)], 0.1, 0.3);
+        assert!(places(&t, 0.1).is_empty());
+        // Two of the same mark side by side stay two.
+        let mut t = Tracks::default();
+        for now in [0.0, 0.1] {
+            t.look(&[at(Glyph::L1, 100.0, 100.0), at(Glyph::L1, 145.0, 100.0)], now, 0.3);
+        }
+        assert_eq!(places(&t, 0.1), [(Glyph::L1, 100.0, 100.0), (Glyph::L1, 145.0, 100.0)]);
+    }
+
+    #[test]
     fn a_prompt_must_be_seen_twice_to_show_and_missed_three_times_to_go() {
         use Glyph::*;
         let mut s = Steady::default();
@@ -809,6 +924,16 @@ mod tests {
         s.look(&[Cross, Triangle]);
         assert_eq!(s.shown(), [Cross], "coming back needs two looks again");
         s.clear();
+        assert!(s.shown().is_empty());
+        // With quick looks it takes more of them to drop a mark.
+        s.set_patience(6);
+        s.look(&[Cross]);
+        s.look(&[Cross]);
+        for _ in 0..5 {
+            s.look(&[]);
+        }
+        assert_eq!(s.shown(), [Cross]);
+        s.look(&[]);
         assert!(s.shown().is_empty());
     }
 
