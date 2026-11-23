@@ -241,6 +241,8 @@ impl Labels {
 pub struct Config {
     /// Turns the keyboard and mouse takeover on and off.
     pub toggle_key: String,
+    /// Saves a picture of the game while playing. Empty for none.
+    pub picture_key: String,
     /// Programs that show the game. The takeover only happens while one of them is in front.
     pub targets: Vec<String>,
     /// Frames per second of the game on the console (30 for GTA 6 on PS5).
@@ -257,6 +259,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             toggle_key: "F10".into(),
+            picture_key: "F9".into(),
             targets: ["veyra_qml_ui.exe", "chiaki-ng.exe", "chiaki.exe", "remoteplay.exe"].map(String::from).to_vec(),
             game_fps: 30.0,
             sounds: true,
@@ -428,6 +431,7 @@ pub struct Layout {
     foot: Vec<Vec<Action>>,
     drive: Vec<Vec<Action>>,
     pub toggle: Input,
+    pub picture: Option<Input>,
 }
 
 impl Layout {
@@ -438,6 +442,16 @@ impl Layout {
             warnings.push(format!("toggle_key \"{}\" is not a key name; using F10", cfg.toggle_key));
             Input(0x79)
         });
+        let picture = match cfg.picture_key.trim() {
+            "" => None,
+            name => match Input::from_name(name).filter(|i| !i.is_mouse() && *i != toggle && *i != Input::LALT) {
+                Some(input) => Some(input),
+                None => {
+                    warnings.push(format!("picture_key \"{name}\" cannot be used; no picture key is set"));
+                    None
+                }
+            },
+        };
         let mut build = |name: &str, src: &Bindings| {
             let mut table = vec![Vec::new(); Input::COUNT];
             for (key, bound) in src {
@@ -445,7 +459,7 @@ impl Layout {
                     warnings.push(format!("{name}: \"{key}\" is not a key or mouse button name"));
                     continue;
                 };
-                if input == toggle || input == Input::LALT {
+                if input == toggle || input == Input::LALT || Some(input) == picture {
                     warnings.push(format!("{name}: {key} is reserved and cannot be bound"));
                     continue;
                 }
@@ -460,7 +474,7 @@ impl Layout {
         };
         let foot = build("on foot", &cfg.keys.foot);
         let drive = build("driving", &cfg.keys.drive);
-        (Layout { foot, drive, toggle }, warnings)
+        (Layout { foot, drive, toggle, picture }, warnings)
     }
 
     pub fn actions(&self, mode: Mode, input: Input) -> &[Action] {
@@ -487,6 +501,11 @@ pub fn config_path() -> PathBuf {
     }
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     base.join(APP_NAME).join("config.toml")
+}
+
+/// Where pictures of the game are saved: a folder beside the config file.
+pub fn pictures_dir() -> PathBuf {
+    config_path().with_file_name("pictures")
 }
 
 /// Reads the config. A missing file gives the defaults. A file that cannot be read gives the
@@ -645,6 +664,25 @@ mod tests {
         assert!(cfg.keys.foot.is_empty());
         let (_, warnings) = Layout::compile(&cfg);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn the_picture_key_is_reserved_and_can_be_turned_off() {
+        let mut cfg = Config::default();
+        let (layout, warnings) = Layout::compile(&cfg);
+        assert!(warnings.is_empty());
+        assert_eq!(layout.picture, Input::from_name("F9"));
+        cfg.keys.foot.insert("F9".into(), Bound::One("cross".into()));
+        let (layout, warnings) = Layout::compile(&cfg);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(!layout.is_bound(Input::from_name("F9").unwrap()));
+        cfg.picture_key = String::new();
+        let (layout, warnings) = Layout::compile(&cfg);
+        assert!(warnings.is_empty() && layout.picture.is_none());
+        assert!(layout.is_bound(Input::from_name("F9").unwrap()), "with no picture key, F9 is an ordinary key again");
+        cfg.picture_key = "F10".into(); // same as the on/off key
+        let (layout, warnings) = Layout::compile(&cfg);
+        assert!(layout.picture.is_none() && warnings.len() == 1);
     }
 
     #[test]

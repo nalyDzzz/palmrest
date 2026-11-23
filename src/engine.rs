@@ -35,6 +35,10 @@ pub enum Msg {
     /// Hold the right stick at this tilt for a while, to find the game's dead zone.
     TestTilt { tilt: f32, seconds: f64 },
     ReconnectOutput,
+    /// The save-picture key was pressed.
+    SavePicture,
+    /// A picture was saved (its path), or could not be (why).
+    PictureSaved(Result<String, String>),
     Quit,
 }
 
@@ -58,6 +62,9 @@ pub struct Status {
     pub testing: bool,
     /// The keys and mouse buttons held right now, one bit per input.
     pub held: [u64; Input::COUNT.div_ceil(64)],
+    /// How the last save-picture press went, and how many pictures were saved this session.
+    pub picture: Option<Result<String, String>>,
+    pub pictures_saved: u32,
 }
 
 impl Status {
@@ -88,10 +95,13 @@ impl Engine {
             mouse_rate: 0.0,
             testing: false,
             held: [0; Input::COUNT.div_ceil(64)],
+            picture: None,
+            pictures_saved: 0,
         }));
         win::start_input(tx.clone())?;
         let shared = status.clone();
-        let thread = std::thread::Builder::new().name("engine".into()).spawn(move || run(rx, shared, cfg, layout)).map_err(|e| e.to_string())?;
+        let own = tx.clone();
+        let thread = std::thread::Builder::new().name("engine".into()).spawn(move || run(rx, own, shared, cfg, layout)).map_err(|e| e.to_string())?;
         Ok(Engine { tx, status, thread: Some(thread) })
     }
 
@@ -122,7 +132,7 @@ fn connect() -> Result<Box<dyn Output>, String> {
     VirtualDs4::connect().map(|d| Box::new(d) as Box<dyn Output>)
 }
 
-fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: Layout) {
+fn run(rx: Receiver<Msg>, tx: Sender<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: Layout) {
     win::fine_timers();
     let mut warnings = shared.lock().map(|s| s.warnings.clone()).unwrap_or_default();
     let mut mapper = Mapper::new(layout, cfg.steering.smooth);
@@ -134,6 +144,8 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
     let (mut next_foreground, mut next_status) = (0.0f64, 0.0f64);
     let mut last_sent: Option<(PadState, f64)> = None;
     let (mut mouse_reports, mut moving_since, mut mouse_rate) = (0u32, None::<f64>, 0.0f32);
+    let mut game_window = 0isize;
+    let (mut picture, mut pictures_saved) = (None::<Result<String, String>>, 0u32);
 
     'run: loop {
         // Full speed while playing, testing, or while the last state still has to be delivered.
@@ -207,6 +219,24 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                     output = connect();
                     last_sent = None;
                 }
+                Msg::SavePicture => {
+                    if live && game_window != 0 {
+                        // Copying and writing the picture takes a moment: not on this thread.
+                        let name = format!("{}_{}.png", unix_seconds(), if mapper.mode() == Mode::Drive { "driving" } else { "on_foot" });
+                        let (path, hwnd, done, sounds) = (crate::config::pictures_dir().join(name), game_window, tx.clone(), cfg.sounds);
+                        std::thread::spawn(move || {
+                            let result = win::save_window_picture(hwnd, &path);
+                            if sounds {
+                                win::beep(if result.is_ok() { 1500 } else { 300 }, 50);
+                            }
+                            let _ = done.send(Msg::PictureSaved(result));
+                        });
+                    }
+                }
+                Msg::PictureSaved(result) => {
+                    pictures_saved += result.is_ok() as u32;
+                    picture = Some(result);
+                }
                 Msg::Quit => break 'run,
             }
             next = rx.try_recv().ok();
@@ -233,6 +263,7 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                     win::release_cursor();
                 }
             }
+            game_window = if live { hwnd } else { 0 };
             win::set_live(live, armed || front);
             if live {
                 win::confine_cursor(hwnd); // again on every check: Windows drops the confinement easily
@@ -284,6 +315,10 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
                 s.held = if live { mapper.held_bits() } else { [0; Input::COUNT.div_ceil(64)] };
+                if s.pictures_saved != pictures_saved || s.picture != picture {
+                    s.pictures_saved = pictures_saved;
+                    s.picture = picture.clone();
+                }
                 if s.warnings != warnings {
                     s.warnings = warnings.clone();
                 }
@@ -297,6 +332,10 @@ fn run(rx: Receiver<Msg>, shared: Arc<Mutex<Status>>, mut cfg: Config, layout: L
     if let Ok(out) = &mut output {
         let _ = out.send(&PadState::default());
     }
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 fn mode_sound(cfg: &Config, mode: Mode) {

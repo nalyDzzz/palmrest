@@ -5,10 +5,11 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.35.0"
+png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.2"
 vigem-client = { version = "0.1.4", features = ["unstable_ds4"] }
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_Media"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_Graphics_Gdi", "Win32_System_Performance", "Win32_System_Diagnostics_Debug", "Win32_Media", "Win32_Storage_Xps"] }
 
 [profile.release]
 opt-level = 3

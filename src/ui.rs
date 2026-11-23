@@ -179,6 +179,8 @@ impl App {
     fn reserved(&self, input: Input) -> Option<&'static str> {
         if Input::from_name(&self.cfg.toggle_key) == Some(input) {
             Some("On / Off")
+        } else if !self.cfg.picture_key.is_empty() && Input::from_name(&self.cfg.picture_key) == Some(input) {
+            Some("Picture")
         } else if input == Input::LALT {
             Some("Alt+Tab")
         } else {
@@ -579,7 +581,7 @@ impl App {
         });
     }
 
-    fn file_row(&mut self, ui: &mut egui::Ui) {
+    fn file_row(&mut self, ui: &mut egui::Ui, status: &Status) {
         ui.horizontal(|ui| {
             if ui.button("Reset keys to defaults").clicked() {
                 self.cfg.keys = Config::default().keys;
@@ -594,6 +596,18 @@ impl App {
             if ui.button("Reload settings file").clicked() {
                 self.reload();
             }
+            if ui.button("Open saved pictures").clicked() {
+                let dir = config::pictures_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+            }
+            let key = &self.cfg.picture_key;
+            match &status.picture {
+                Some(Ok(_)) => ui.label(RichText::new(format!("{} saved. {key} while playing saves another.", plural(status.pictures_saved))).small().color(LIVE)),
+                Some(Err(why)) => ui.label(RichText::new(format!("Picture not saved: {why}.")).small().color(BAD)),
+                None if key.is_empty() => ui.label(""),
+                None => ui.label(RichText::new(format!("{key} while playing saves a picture of the game.")).small().color(MUTED)),
+            };
         });
     }
 
@@ -654,6 +668,10 @@ impl App {
     }
 }
 
+fn plural(pictures: u32) -> String {
+    if pictures == 1 { "1 picture".to_string() } else { format!("{pictures} pictures") }
+}
+
 /// Keycaps, headings and the state word use Bahnschrift, the DIN-style face Windows ships with:
 /// it is the lettering of signs and real keycaps. Body text stays in egui's own face. If the
 /// font file is missing the display face simply falls back to the body face.
@@ -705,7 +723,7 @@ impl eframe::App for App {
                 ui.add_space(6.0);
                 self.key_editor(ui, &status);
                 ui.add_space(4.0);
-                self.file_row(ui);
+                self.file_row(ui, &status);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(4.0);

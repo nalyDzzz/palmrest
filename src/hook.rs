@@ -18,6 +18,8 @@ pub enum Out {
     Input { input: Input, down: bool },
     /// The wheel turned one notch.
     Wheel(Input),
+    /// The save-picture key was pressed.
+    SavePicture,
 }
 
 /// The situation an event arrives in.
@@ -28,6 +30,8 @@ pub struct Env {
     /// Turned on, or a game window is in front: the on/off key is ours.
     pub can_toggle: bool,
     pub toggle: Input,
+    /// The key that saves a picture of the game, if one is set.
+    pub picture: Option<Input>,
 }
 
 pub struct Hook {
@@ -57,15 +61,21 @@ impl Hook {
             return (true, if fire { Out::Toggle } else { Out::Nothing });
         }
         let i = input.index();
+        let picture = env.picture == Some(input);
         if down {
-            if env.live && !alt && bound(input) {
+            if env.live && !alt && (picture || bound(input)) {
                 let first = !std::mem::replace(&mut self.taken[i], true);
-                return (true, if first { Out::Input { input, down: true } } else { Out::Nothing });
+                let out = match (first, picture) {
+                    (false, _) => Out::Nothing,
+                    (true, true) => Out::SavePicture,
+                    (true, false) => Out::Input { input, down: true },
+                };
+                return (true, out);
             }
             return (false, Out::Nothing);
         }
         if std::mem::replace(&mut self.taken[i], false) {
-            return (true, Out::Input { input, down: false });
+            return (true, if picture { Out::Nothing } else { Out::Input { input, down: false } });
         }
         (false, Out::Nothing)
     }
@@ -104,8 +114,22 @@ mod tests {
     const K: Input = Input(b'K' as u16);
     const F10: Input = Input(0x79);
 
+    const F9: Input = Input(0x78);
+
     fn env(live: bool, can_toggle: bool) -> Env {
-        Env { live, can_toggle, toggle: F10 }
+        Env { live, can_toggle, toggle: F10, picture: Some(F9) }
+    }
+
+    #[test]
+    fn the_picture_key_fires_once_per_press_while_playing_only() {
+        let mut h = Hook::default();
+        assert_eq!(h.key(&env(false, true), bound, F9, true, false), (false, Out::Nothing), "not playing: F9 is another program's");
+        assert_eq!(h.key(&env(false, true), bound, F9, false, false), (false, Out::Nothing));
+        assert_eq!(h.key(&env(true, true), bound, F9, true, false), (true, Out::SavePicture));
+        assert_eq!(h.key(&env(true, true), bound, F9, true, false), (true, Out::Nothing), "held");
+        assert_eq!(h.key(&env(true, true), bound, F9, false, false), (true, Out::Nothing));
+        let none = Env { picture: None, ..env(true, true) };
+        assert_eq!(h.key(&none, bound, F9, true, false), (false, Out::Nothing), "no picture key set");
     }
 
     fn bound(i: Input) -> bool {

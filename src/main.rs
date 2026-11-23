@@ -23,6 +23,16 @@ fn main() {
     if std::env::args().any(|a| a == "--mouse-test") {
         return mouse_test();
     }
+    // Test aid: `--save-picture <window handle> <file>` saves that window's picture once.
+    let argv: Vec<String> = std::env::args().collect();
+    if let Some(i) = argv.iter().position(|a| a == "--save-picture") {
+        let hwnd = argv.get(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
+        let path = std::path::PathBuf::from(argv.get(i + 2).cloned().unwrap_or_default());
+        return match win::save_window_picture(hwnd, &path) {
+            Ok(path) => println!("saved {path}"),
+            Err(why) => println!("FAILED {why}"),
+        };
+    }
     let path = config::config_path();
     let (cfg, load_error) = config::load(&path);
     let engine = match engine::Engine::start(cfg.clone()) {

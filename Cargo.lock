@@ -2488,6 +2488,7 @@ name = "ps5-remote-sim"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "png",
  "serde",
  "toml",
  "vigem-client",

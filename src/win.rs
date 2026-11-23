@@ -11,7 +11,11 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint, MonitorFromWindow};
+use windows::Win32::Graphics::Gdi::{
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint, MonitorFromWindow, ReleaseDC, SelectObject,
+};
+use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
 use windows::Win32::Media::timeBeginPeriod;
 use windows::Win32::System::Diagnostics::Debug::Beep;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -24,8 +28,8 @@ use windows::Win32::UI::Input::{
     GetRawInputData, HRAWINPUT, RAWINPUT, RAWINPUTDEVICE, RAWINPUTHEADER, RID_INPUT, RIDEV_INPUTSINK, RIM_TYPEMOUSE, RegisterRawInputDevices,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowRect,
-    GetWindowThreadProcessId, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
+    CallNextHookEx, ClipCursor, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetForegroundWindow, GetMessageW, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, HWND_MESSAGE, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
     WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_INPUT, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
     SetTimer, WM_MBUTTONUP, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSEXW,
 };
@@ -54,6 +58,9 @@ pub static ALWAYS_REPORT_MOUSE: AtomicBool = AtomicBool::new(false);
 pub static MOUSE_REPORTS: AtomicU64 = AtomicU64::new(0);
 static CAN_TOGGLE: AtomicBool = AtomicBool::new(false);
 static TOGGLE: AtomicU32 = AtomicU32::new(0x79);
+/// The save-picture key, or `NO_KEY`.
+static PICTURE: AtomicU32 = AtomicU32::new(NO_KEY);
+const NO_KEY: u32 = u32::MAX;
 static BOUND: [AtomicU64; Input::COUNT.div_ceil(64)] = [const { AtomicU64::new(0) }; Input::COUNT.div_ceil(64)];
 static HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static TX: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -99,6 +106,7 @@ pub fn heartbeat() {
 /// Tells the hooks which inputs are bound.
 pub fn set_bound(layout: &Layout) {
     TOGGLE.store(layout.toggle.0 as u32, Relaxed);
+    PICTURE.store(layout.picture.map_or(NO_KEY, |i| i.0 as u32), Relaxed);
     for (word, slot) in BOUND.iter().enumerate() {
         let mut bits = 0u64;
         for bit in 0..64 {
@@ -121,6 +129,7 @@ fn env() -> Env {
         live: LIVE.load(Relaxed) && engine_alive,
         can_toggle: CAN_TOGGLE.load(Relaxed) && engine_alive,
         toggle: Input(TOGGLE.load(Relaxed) as u16),
+        picture: Some(PICTURE.load(Relaxed)).filter(|k| *k != NO_KEY).map(|k| Input(k as u16)),
     }
 }
 
@@ -131,6 +140,7 @@ fn report(out: Out) {
         Out::Toggle => Msg::Toggle,
         Out::Input { input, down } => Msg::Input { t, input, down },
         Out::Wheel(input) => Msg::Wheel { t, input },
+        Out::SavePicture => Msg::SavePicture,
     };
     if let Some(tx) = TX.get() {
         let _ = tx.send(msg);
@@ -346,6 +356,77 @@ unsafe fn hide_point(hwnd: HWND, window: RECT) -> (i32, i32) {
         }
         ((window.left + window.right) / 2, (window.top + window.bottom) / 2)
     }
+}
+
+/// Copies a window's own picture (not whatever may be on top of it): width, height, and RGB
+/// bytes, rows from the top. `None` if the window is minimized or cannot be copied.
+///
+/// This waits for the window's program to answer, so it must not run on a thread that matters.
+pub fn grab_window(hwnd: isize) -> Option<(u32, u32, Vec<u8>)> {
+    unsafe {
+        let window = HWND(hwnd as *mut c_void);
+        if hwnd == 0 || IsIconic(window).as_bool() {
+            return None;
+        }
+        let mut client = RECT::default();
+        GetClientRect(window, &mut client).ok()?;
+        let (w, h) = (client.right, client.bottom);
+        if w <= 0 || h <= 0 {
+            return None;
+        }
+        let screen = GetDC(Some(window));
+        let dc = CreateCompatibleDC(Some(screen));
+        let bitmap = CreateCompatibleBitmap(screen, w, h);
+        ReleaseDC(Some(window), screen);
+        let mut rgb = None;
+        if !dc.is_invalid() && !bitmap.is_invalid() {
+            let previous = SelectObject(dc, bitmap.into());
+            // 1 = client area only, 2 = include what the graphics card drew.
+            let copied = PrintWindow(window, dc, PRINT_WINDOW_FLAGS(3)).as_bool();
+            SelectObject(dc, previous);
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: w,
+                    biHeight: -h, // negative: rows from the top
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bgrx = vec![0u8; w as usize * h as usize * 4];
+            let rows = GetDIBits(dc, bitmap, 0, h as u32, Some(bgrx.as_mut_ptr() as *mut c_void), &mut info, DIB_RGB_COLORS);
+            if copied && rows == h {
+                rgb = Some(bgrx.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0]]).collect());
+            }
+        }
+        if !bitmap.is_invalid() {
+            let _ = DeleteObject(bitmap.into());
+        }
+        if !dc.is_invalid() {
+            let _ = DeleteDC(dc);
+        }
+        rgb.map(|rgb| (w as u32, h as u32, rgb))
+    }
+}
+
+/// Saves a picture of the window as a PNG file. Returns the file's path.
+pub fn save_window_picture(hwnd: isize, path: &std::path::Path) -> Result<String, String> {
+    let (w, h, rgb) = grab_window(hwnd).ok_or("the game window could not be copied")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    }
+    let file = std::fs::File::create(path).map_err(|e| format!("could not create {}: {e}", path.display()))?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    writer.write_image_data(&rgb).map_err(|e| e.to_string())?;
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
 }
 
 /// A short tone, without holding up the caller.
