@@ -217,8 +217,9 @@ const CORNER_SQUARE: f32 = 0.60;
 const CORNER_ROUNDED: f32 = 0.40;
 
 /// The dark pattern of each mark on the grid, as the game draws them, and the outline it comes
-/// in. All are read off saved game pictures.
-const PATTERNS: [(Glyph, Outline, [&str; GRID]); 12] = [
+/// in. All are read off saved game pictures. A mark can have more than one pattern: the game
+/// draws the square small in its lists and larger and bolder in the weapon wheel and the menus.
+const PATTERNS: [(Glyph, Outline, [&str; GRID]); 14] = [
     (
         Glyph::Triangle,
         Outline::Disc,
@@ -244,21 +245,21 @@ const PATTERNS: [(Glyph, Outline, [&str; GRID]); 12] = [
         Glyph::Circle,
         Outline::Disc,
         [
-            "...............",
+            "......###......",
             "....#######....",
-            "..####...####..",
-            "..##.......##..",
+            "..###########..",
+            ".####.....####.",
+            ".###.......###.",
             ".##.........##.",
             ".##.........##.",
             ".##.........##.",
             ".##.........##.",
             ".##.........##.",
-            ".##.........##.",
-            ".##.........##.",
-            "..##.......##..",
-            "..####...####..",
+            ".###.......###.",
+            ".####.....####.",
+            "..###########..",
             "....#######....",
-            "...............",
+            "......###......",
         ],
     ),
     (
@@ -300,6 +301,51 @@ const PATTERNS: [(Glyph, Outline, [&str; GRID]); 12] = [
             ".#############.",
             ".#############.",
             "...............",
+            "...............",
+        ],
+    ),
+    (
+        // The small square of the lists.
+        Glyph::Square,
+        Outline::Disc,
+        [
+            "...............",
+            "...............",
+            "..###########..",
+            "..###########..",
+            "..##.......##..",
+            "..##.......##..",
+            "..##.......##..",
+            "..##.......##..",
+            "..##.......##..",
+            "..##.......##..",
+            "..##.......##..",
+            "..###########..",
+            "..###########..",
+            "...............",
+            "...............",
+        ],
+    ),
+    (
+        // The larger, bolder square of the weapon wheel and the menus. It covers nearly all of
+        // the circle's ring: what sets it apart are its corners.
+        Glyph::Square,
+        Outline::Disc,
+        [
+            "...............",
+            ".#############.",
+            ".#############.",
+            ".###.......###.",
+            ".###........##.",
+            ".###........##.",
+            ".###........##.",
+            ".###........##.",
+            ".###........##.",
+            ".###........##.",
+            ".###........##.",
+            ".#############.",
+            ".#############.",
+            ".#############.",
             "...............",
         ],
     ),
@@ -533,7 +579,15 @@ fn alike_nearby(seen: &Grid, known: &Grid) -> f32 {
 
 /// Which mark a dark pattern on a face of this outline is, if it is clearly one of them.
 fn classify(seen: &Grid, outline: Outline) -> Option<(Glyph, f32)> {
-    let mut scores: Vec<(Glyph, f32)> = PATTERNS.iter().filter(|(_, o, _)| *o == outline).map(|(g, _, rows)| (*g, alike_nearby(seen, &pattern(rows)))).collect();
+    // A mark with several patterns scores as its best one.
+    let mut scores: Vec<(Glyph, f32)> = Vec::new();
+    for (glyph, _, rows) in PATTERNS.iter().filter(|(_, o, _)| *o == outline) {
+        let score = alike_nearby(seen, &pattern(rows));
+        match scores.iter_mut().find(|(g, _)| g == glyph) {
+            Some(known) => known.1 = known.1.max(score),
+            None => scores.push((*glyph, score)),
+        }
+    }
     scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     let (best, second) = (scores[0], scores[1]);
     (best.1 >= MATCH_AT_LEAST && best.1 - second.1 >= LEAD_AT_LEAST).then_some(best)
@@ -725,9 +779,10 @@ mod tests {
         }
         // No mark may pass for another of the same outline, even when it sits a cell off: a
         // perfect drawing of one must beat every other by a wide margin. (The closest pairs are
-        // the ones that differ in one letter only: L3 and R3, L2 and R2.)
+        // the ones that differ in one letter only, L3 and R3, L2 and R2, and the circle and the
+        // bold square, which differ in the corners.)
         for (i, (a, outline_a, rows_a)) in PATTERNS.iter().enumerate() {
-            for (b, _, rows_b) in PATTERNS[i + 1..].iter().filter(|(_, o, _)| o == outline_a) {
+            for (b, _, rows_b) in PATTERNS[i + 1..].iter().filter(|(b, o, _)| o == outline_a && b != a) {
                 let likeness = alike_nearby(&pattern(rows_a), &pattern(rows_b));
                 println!("{a:?} vs {b:?}: {likeness:.2}");
                 assert!(likeness < 0.76, "{a:?} and {b:?} are too alike: {likeness}");
@@ -924,7 +979,7 @@ mod tests {
         // has a cross button on it that reads as a prompt, and the two "Restore" prompts are dimmed.
         const EVERY_BUTTON: &[Glyph] = &[L1, L1, R1, R1, L2, R2, Triangle, Square, Circle, Circle, Cross, L3, R3, R3, LeftStick, RightStick];
         const PHOTO_MODE: &[Glyph] = &[LeftStick, RightStick, Triangle, Cross, Circle, L1, R1, L2, R2, L3];
-        let expected: [(&str, &[Glyph], &[Glyph]); 24] = [
+        let expected: [(&str, &[Glyph], &[Glyph]); 27] = [
             ("1795460287_on_foot", &[Triangle], &[Square]),
             ("1795460357_on_foot", &[Circle, Cross, Square], &[]),
             ("1123_100027_should_be_drive", &[Cross], &[]),
@@ -934,7 +989,7 @@ mod tests {
             ("1123_100734_should_be_foot", &[Triangle], &[]), // fading out, half see-through
             ("1795461500_driving", &[], &[Triangle]), // dark grey: not available
             ("1795461508_driving", &[], &[Triangle]),
-            ("1795461544_driving", &[Triangle, R1], &[Square]), // weapon wheel in a car; the square's inside is shaded
+            ("1795461544_driving", &[Triangle, R1, Square], &[]), // weapon wheel in a car
             ("1795461643_driving", &[Triangle], &[Square]), // the square is half-lit
             ("1795461708_on_foot", &[Cross, Square], &[]),
             ("1795461720_on_foot", &[Cross, Square], &[]),
@@ -942,13 +997,16 @@ mod tests {
             ("1795463103_driving", &[LeftStick, RightStick], &[]), // hot-wiring
             ("1795463106_driving", &[LeftStick, RightStick], &[]),
             ("1795463161_on_foot", &[Square], &[Triangle]), // break in; clone key is dimmed
-            ("1795463252_on_foot", &[Triangle, R1, L2, R2], &[Square]), // weapon wheel
+            ("1795463252_on_foot", &[Triangle, R1, L2, R2, Square], &[]), // weapon wheel
             ("1795463737_on_foot", PHOTO_MODE, &[Square]),
             ("1795464338_on_foot", PHOTO_MODE, &[Square]),
-            ("1795464624_driving", &[Cross, L1, R1, R3], &[Square]), // radio menu; its square is drawn larger and bolder
+            ("1795464624_driving", &[Cross, L1, R1, R3, Square], &[]), // radio menu
             ("1795464689_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
             ("1795464692_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
             ("1795464718_on_foot", EVERY_BUTTON, &[Cross, Triangle, Square]),
+            ("1795467833_on_foot", &[R1, Square, Triangle], &[]), // weapon wheel: its square and triangle are the bold ones
+            ("1795467907_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]), // with a weapon's card; "Drop" is dimmed
+            ("1795467968_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]),
         ];
         let dirs = std::env::var("PS5RS_FRAMES").expect("set PS5RS_FRAMES");
         let (mut frames, mut slowest, mut wrong) = (0, 0.0f64, 0u32);

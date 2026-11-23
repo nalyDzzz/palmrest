@@ -18,10 +18,10 @@ use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, ClientToScreen, CreateCompatibleDC,
     CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject,
     DT_CENTER, DrawTextW, Ellipse, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, GetStockObject, GetTextExtentPoint32W, HBITMAP, HDC, HFONT,
-    LineTo, MoveToEx, NULL_BRUSH, PS_SOLID, Polygon, Rectangle, RoundRect, SelectObject, SetBkMode, SetTextColor, TRANSPARENT, WHITE_BRUSH,
-    WHITE_PEN,
+    LineTo, MoveToEx, NULL_BRUSH, PS_SOLID, Polygon, Polyline, Rectangle, RoundRect, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
+    WHITE_BRUSH, WHITE_PEN,
 };
-use windows::Win32::Graphics::Gdi::CreatePen;
+use windows::Win32::Graphics::Gdi::{CreatePen, CreateRoundRectRgn, SelectClipRgn};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClientRect, GetMessageW, HWND_TOPMOST, IsIconic, MSG, RegisterClassExW, SW_HIDE,
@@ -31,6 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::w;
 
 use crate::config::Mode;
+use crate::keys::sign;
 use crate::prompts::Glyph;
 
 /// What the label should show. The engine keeps this up to date.
@@ -313,6 +314,200 @@ unsafe fn refresh_spots(state: &OverlayState) {
     }
 }
 
+/// A stretch of a key's name: plain text, or one sign that is drawn (see `keys::sign`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Run<'a> {
+    Text(&'a str),
+    Sign(char),
+}
+
+fn runs(text: &str) -> Vec<Run<'_>> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    for (i, c) in text.char_indices() {
+        if sign::ALL.contains(&c) {
+            if from < i {
+                out.push(Run::Text(&text[from..i]));
+            }
+            out.push(Run::Sign(c));
+            from = i + c.len_utf8();
+        }
+    }
+    if from < text.len() {
+        out.push(Run::Text(&text[from..]));
+    }
+    out
+}
+
+/// How wide and high a sign is drawn beside text of a font `em` high.
+fn sign_size(sign: char, em: i32) -> (i32, i32) {
+    // Height as a share of the font's, and width as a multiple of that height.
+    let (height, shape) = match sign {
+        sign::MOUSE_LEFT | sign::MOUSE_RIGHT | sign::MOUSE_MIDDLE | sign::MOUSE => (1.3, 0.68),
+        sign::BACKSPACE => (0.72, 1.5),
+        sign::ENTER => (0.72, 1.2),
+        sign::SHIFT | sign::CAPS_LOCK => (0.84, 0.95),
+        sign::TAB => (0.66, 1.5),
+        sign::SPACE => (0.52, 2.3),
+        sign::UP | sign::DOWN => (0.8, 0.75),
+        _ => (0.62, 1.3),
+    };
+    let h = (height * em as f32).round() as i32;
+    ((h as f32 * shape).round() as i32, h)
+}
+
+/// How thick a sign's lines are for a font `em` high: about as thick as the font's own strokes.
+fn sign_stroke(em: i32) -> i32 {
+    ((0.105 * em as f32).round() as i32).max(1)
+}
+
+/// The pieces of a key's name in a row: each with where it starts and how wide it is, and the
+/// width of the whole. The font must be selected into `dc`.
+unsafe fn laid_out<'a>(dc: HDC, text: &'a str, em: i32) -> (Vec<(Run<'a>, i32, i32)>, i32) {
+    unsafe {
+        let mut placed: Vec<(Run<'a>, i32, i32)> = Vec::new();
+        let mut x = 0;
+        for run in runs(text) {
+            // A sign keeps a little air from its neighbour, unless a space in the text already gives it.
+            if let Some((before, _, _)) = placed.last() {
+                let spaced = matches!(before, Run::Text(t) if t.ends_with(' ')) || matches!(run, Run::Text(t) if t.starts_with(' '));
+                if !spaced {
+                    x += (0.16 * em as f32).round() as i32;
+                }
+            }
+            let width = match run {
+                Run::Text(t) => {
+                    let wide: Vec<u16> = t.encode_utf16().collect();
+                    let mut extent = SIZE::default();
+                    let _ = GetTextExtentPoint32W(dc, &wide, &mut extent);
+                    extent.cx
+                }
+                Run::Sign(c) => sign_size(c, em).0,
+            };
+            placed.push((run, x, width));
+            x += width;
+        }
+        (placed, x)
+    }
+}
+
+/// Draws a key's name, signs and all, white into a stencil: at the left of `area` or in its
+/// middle, and in the middle of its height.
+unsafe fn draw_keys(dc: HDC, font: HFONT, text: &str, em: i32, area: RECT, centred: bool) {
+    unsafe {
+        let previous_font = SelectObject(dc, font.into());
+        let (placed, width) = laid_out(dc, text, em);
+        let left = if centred { area.left + (area.right - area.left - width) / 2 } else { area.left };
+        let stroke = sign_stroke(em);
+        let pen = CreatePen(PS_SOLID, stroke, COLORREF(0x00FF_FFFF));
+        let previous_pen = SelectObject(dc, pen.into());
+        let previous_brush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+        for (run, x, w) in placed {
+            match run {
+                Run::Text(t) => {
+                    let mut wide: Vec<u16> = t.encode_utf16().collect();
+                    let mut at = RECT { left: left + x, top: area.top, right: left + x + w + em, bottom: area.bottom };
+                    DrawTextW(dc, &mut wide, &mut at, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+                }
+                Run::Sign(c) => {
+                    let (w, h) = sign_size(c, em);
+                    draw_sign(dc, c, left + x, (area.top + area.bottom - h) / 2, w, h, stroke);
+                }
+            }
+        }
+        SelectObject(dc, previous_brush);
+        SelectObject(dc, previous_pen);
+        SelectObject(dc, previous_font);
+        let _ = DeleteObject(pen.into());
+    }
+}
+
+/// Draws one sign in a box. The pen for its lines is selected, and no brush: shapes stay hollow
+/// except where a part is filled on purpose (the pressed button of a mouse).
+unsafe fn draw_sign(dc: HDC, sign: char, x: i32, y: i32, w: i32, h: i32, stroke: i32) {
+    unsafe {
+        // The lines are `stroke` thick around the points given: keep them inside the box.
+        let (x, y, w, h) = (x + stroke / 2, y + stroke / 2, w - stroke, h - stroke);
+        let at = |u: f32, v: f32| POINT { x: x + (u * w as f32).round() as i32, y: y + (v * h as f32).round() as i32 };
+        let points = |list: &[(f32, f32)]| list.iter().map(|&(u, v)| at(u, v)).collect::<Vec<POINT>>();
+        let line = |list: &[(f32, f32)]| {
+            let _ = Polyline(dc, &points(list));
+        };
+        let outline = |list: &[(f32, f32)]| {
+            let _ = Polygon(dc, &points(list));
+        };
+        match sign {
+            sign::BACKSPACE => {
+                outline(&[(0.0, 0.5), (0.32, 0.0), (1.0, 0.0), (1.0, 1.0), (0.32, 1.0)]);
+                line(&[(0.5, 0.3), (0.8, 0.7)]);
+                line(&[(0.8, 0.3), (0.5, 0.7)]);
+            }
+            sign::ENTER => {
+                line(&[(1.0, 0.0), (1.0, 0.64), (0.0, 0.64)]);
+                line(&[(0.3, 0.28), (0.0, 0.64), (0.3, 1.0)]);
+            }
+            sign::SHIFT => outline(&[(0.5, 0.0), (1.0, 0.52), (0.72, 0.52), (0.72, 1.0), (0.28, 1.0), (0.28, 0.52), (0.0, 0.52)]),
+            sign::CAPS_LOCK => {
+                outline(&[(0.5, 0.0), (1.0, 0.5), (0.72, 0.5), (0.72, 0.7), (0.28, 0.7), (0.28, 0.5), (0.0, 0.5)]);
+                line(&[(0.28, 1.0), (0.72, 1.0)]);
+            }
+            sign::TAB => {
+                line(&[(0.0, 0.5), (0.78, 0.5)]);
+                line(&[(0.52, 0.08), (0.8, 0.5), (0.52, 0.92)]);
+                line(&[(1.0, 0.0), (1.0, 1.0)]);
+            }
+            sign::SPACE => line(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)]),
+            sign::UP => {
+                line(&[(0.5, 1.0), (0.5, 0.0)]);
+                line(&[(0.0, 0.46), (0.5, 0.0), (1.0, 0.46)]);
+            }
+            sign::DOWN => {
+                line(&[(0.5, 0.0), (0.5, 1.0)]);
+                line(&[(0.0, 0.54), (0.5, 1.0), (1.0, 0.54)]);
+            }
+            sign::LEFT => {
+                line(&[(1.0, 0.5), (0.0, 0.5)]);
+                line(&[(0.38, 0.0), (0.0, 0.5), (0.38, 1.0)]);
+            }
+            sign::RIGHT => {
+                line(&[(0.0, 0.5), (1.0, 0.5)]);
+                line(&[(0.62, 0.0), (1.0, 0.5), (0.62, 1.0)]);
+            }
+            mouse => {
+                // The body, round at both ends; a line under the buttons and one between them.
+                let (a, b) = (at(0.0, 0.0), at(1.0, 1.0));
+                let _ = RoundRect(dc, a.x, a.y, b.x + 1, b.y + 1, w, w);
+                line(&[(0.0, 0.44), (1.0, 0.44)]);
+                let white = GetStockObject(WHITE_BRUSH);
+                if mouse == sign::MOUSE_MIDDLE {
+                    // The wheel, filled.
+                    let (p, q) = (at(0.33, 0.1), at(0.67, 0.36));
+                    let hollow = SelectObject(dc, white);
+                    let _ = RoundRect(dc, p.x, p.y, q.x + 1, q.y + 1, q.x - p.x, q.x - p.x);
+                    SelectObject(dc, hollow);
+                } else {
+                    line(&[(0.5, 0.0), (0.5, 0.44)]);
+                }
+                // The button meant, filled, as far as the body goes.
+                let button = match mouse {
+                    sign::MOUSE_LEFT => Some((at(0.0, 0.0), at(0.5, 0.44))),
+                    sign::MOUSE_RIGHT => Some((at(0.5, 0.0), at(1.0, 0.44))),
+                    _ => None,
+                };
+                if let Some((p, q)) = button {
+                    let body = CreateRoundRectRgn(a.x, a.y, b.x + 2, b.y + 2, w, w);
+                    SelectClipRgn(dc, Some(body));
+                    let hollow = SelectObject(dc, white);
+                    let _ = Rectangle(dc, p.x, p.y, q.x + 1, q.y + 1);
+                    SelectObject(dc, hollow);
+                    SelectClipRgn(dc, None);
+                    let _ = DeleteObject(body.into());
+                }
+            }
+        }
+    }
+}
+
 /// Is this mark drawn on a badge (L1, R1, L2, R2) and not on a disc?
 fn on_a_badge(glyph: Glyph) -> bool {
     matches!(glyph, Glyph::L1 | Glyph::R1 | Glyph::L2 | Glyph::R2)
@@ -325,29 +520,26 @@ unsafe fn draw_hint(key: &str, glyph: Glyph, diameter: i32, scale: f32) -> Optio
     unsafe {
         let px = |v: f32| (v * scale).round() as i32;
         let s = SMOOTH;
-        let font: HFONT = CreateFontW(-px(16.0) * s, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, FONT_OUTPUT_PRECISION(0), FONT_CLIP_PRECISION(0), ANTIALIASED_QUALITY, 0, w!("Bahnschrift"));
-        let mut wide: Vec<u16> = key.encode_utf16().collect();
+        let em = px(16.0) * s;
+        let font: HFONT = CreateFontW(-em, 0, 0, 0, 700, 0, 0, 0, DEFAULT_CHARSET, FONT_OUTPUT_PRECISION(0), FONT_CLIP_PRECISION(0), ANTIALIASED_QUALITY, 0, w!("Bahnschrift"));
         let probe = Surface::new(8, 8)?;
         let previous = SelectObject(probe.dc, font.into());
-        let mut extent = SIZE::default();
-        let _ = GetTextExtentPoint32W(probe.dc, &wide, &mut extent);
+        let key_width = laid_out(probe.dc, key, em).1;
         SelectObject(probe.dc, previous);
         let h = (diameter + px(4.0)).max(px(24.0));
-        let w = ((extent.cx + s - 1) / s + px(16.0)).max(h);
+        let w = ((key_width + s - 1) / s + px(16.0)).max(h);
         let out = Surface::new(w, h)?;
         let stencil = Surface::new(w * s, h * s)?;
         SelectObject(stencil.dc, GetStockObject(WHITE_BRUSH));
         SelectObject(stencil.dc, GetStockObject(WHITE_PEN));
         let bend = if on_a_badge(glyph) { px(9.0) * s } else { h * s };
         let _ = RoundRect(stencil.dc, 0, 0, w * s, h * s, bend, bend);
-        lay(&out, &stencil, BACKING, 0.94);
+        // Nearly solid: the button's own mark must not show through under the key.
+        lay(&out, &stencil, BACKING, 0.98);
         stencil.pixels().fill(0);
         SetBkMode(stencil.dc, TRANSPARENT);
         SetTextColor(stencil.dc, COLORREF(0x00FF_FFFF));
-        let previous = SelectObject(stencil.dc, font.into());
-        let mut area = RECT { left: 0, top: 0, right: w * s, bottom: h * s };
-        DrawTextW(stencil.dc, &mut wide, &mut area, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
-        SelectObject(stencil.dc, previous);
+        draw_keys(stencil.dc, font, key, em, RECT { left: 0, top: 0, right: w * s, bottom: h * s }, true);
         lay(&out, &stencil, tint(glyph), 1.0);
         let _ = DeleteObject(font.into());
         Some(out)
@@ -499,7 +691,8 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
             (extent.cx + s - 1) / s
         };
         let name_w = width_of(name);
-        let key_w: Vec<i32> = prompts.iter().map(|(_, keys)| width_of(keys)).collect();
+        let em = px(16.0) * s;
+        let key_w: Vec<i32> = prompts.iter().map(|(_, keys)| (laid_out(probe.dc, keys, em).1 + s - 1) / s).collect();
         SelectObject(probe.dc, previous_font);
 
         let (h, pad, dot, mark) = (px(30.0).max(14), px(12.0), px(8.0).max(4), px(17.0).max(9));
@@ -593,7 +786,7 @@ unsafe fn draw_label(mode: Mode, prompts: &[(Glyph, String)], scale: f32) -> Opt
         // ...and beside it the key, all in one pass.
         stencil.pixels().fill(0);
         for (((_, keys), left), key_width) in prompts.iter().zip(&key_left).zip(&key_w) {
-            text_at(keys, *left, left + key_width + 2, font, false);
+            draw_keys(stencil.dc, font, keys, em, RECT { left: left * s, top: 0, right: (left + key_width + 2) * s, bottom: h * s }, false);
         }
         lay(&out, &stencil, ON_FOOT, 1.0);
 
@@ -615,6 +808,22 @@ mod tests {
 
     fn spans(places: &[Place]) -> Vec<(i32, i32)> {
         places.iter().map(|p| (p.x, p.x + p.w)).collect()
+    }
+
+    #[test]
+    fn a_key_name_splits_into_text_and_signs() {
+        use crate::keys::Input;
+        let name = |key: &str| Input::from_name(key).unwrap().sign();
+        assert_eq!(runs("Ctrl"), [Run::Text("Ctrl")]);
+        assert_eq!(runs(&name("Backspace")), [Run::Sign(sign::BACKSPACE)]);
+        assert_eq!(runs(&format!("{} / {}", name("Space"), name("Enter"))), [Run::Sign(sign::SPACE), Run::Text(" / "), Run::Sign(sign::ENTER)]);
+        assert_eq!(runs(&name("Mouse4")), [Run::Sign(sign::MOUSE), Run::Text("4")]);
+        assert_eq!(runs(&name("WheelUp")), [Run::Sign(sign::MOUSE_MIDDLE), Run::Sign(sign::UP)]);
+        // Every sign has a size that leaves room for its lines.
+        for c in sign::ALL {
+            let (w, h) = sign_size(c, 48);
+            assert!(w > 3 * sign_stroke(48) && h > 3 * sign_stroke(48), "{c:?}");
+        }
     }
 
     #[test]

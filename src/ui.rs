@@ -50,36 +50,11 @@ fn mix(a: Color32, b: Color32, share_of_b: f32) -> Color32 {
     Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
-/// One place on the drawn keyboard: a key and its width in key units, or empty space.
-enum Slot {
-    K(&'static str, f32),
-    Gap(f32),
-}
-use Slot::{Gap, K};
-
-/// The main block, 15 units wide.
-const MAIN: [&[Slot]; 6] = [
-    &[K("Esc", 1.0), Gap(1.0), K("F1", 1.0), K("F2", 1.0), K("F3", 1.0), K("F4", 1.0), Gap(0.5), K("F5", 1.0), K("F6", 1.0), K("F7", 1.0), K("F8", 1.0), Gap(0.5), K("F9", 1.0), K("F10", 1.0), K("F11", 1.0), K("F12", 1.0)],
-    &[K("Grave", 1.0), K("1", 1.0), K("2", 1.0), K("3", 1.0), K("4", 1.0), K("5", 1.0), K("6", 1.0), K("7", 1.0), K("8", 1.0), K("9", 1.0), K("0", 1.0), K("Minus", 1.0), K("Equals", 1.0), K("Backspace", 2.0)],
-    &[K("Tab", 1.5), K("Q", 1.0), K("W", 1.0), K("E", 1.0), K("R", 1.0), K("T", 1.0), K("Y", 1.0), K("U", 1.0), K("I", 1.0), K("O", 1.0), K("P", 1.0), K("LBracket", 1.0), K("RBracket", 1.0), K("Backslash", 1.5)],
-    &[K("CapsLock", 1.75), K("A", 1.0), K("S", 1.0), K("D", 1.0), K("F", 1.0), K("G", 1.0), K("H", 1.0), K("J", 1.0), K("K", 1.0), K("L", 1.0), K("Semicolon", 1.0), K("Quote", 1.0), K("Enter", 2.25)],
-    &[K("LShift", 2.25), K("Z", 1.0), K("X", 1.0), K("C", 1.0), K("V", 1.0), K("B", 1.0), K("N", 1.0), K("M", 1.0), K("Comma", 1.0), K("Period", 1.0), K("Slash", 1.0), K("RShift", 2.75)],
-    &[K("LCtrl", 1.5), Gap(1.25), K("LAlt", 1.25), K("Space", 6.25), K("RAlt", 1.25), Gap(2.0), K("RCtrl", 1.5)],
-];
-/// The block to the right of it, 3 units wide.
-const NAV: [&[Slot]; 6] = [
-    &[],
-    &[K("Insert", 1.0), K("Home", 1.0), K("PageUp", 1.0)],
-    &[K("Delete", 1.0), K("End", 1.0), K("PageDown", 1.0)],
-    &[],
-    &[Gap(1.0), K("Up", 1.0)],
-    &[K("Left", 1.0), K("Down", 1.0), K("Right", 1.0)],
-];
+use crate::keys::Slot::{Gap, K};
+use crate::keys::{BLOCK_GAP, MAIN, MAIN_UNITS, NAV};
 const MOUSE: [&str; 7] = ["MouseLeft", "MouseRight", "MouseMiddle", "WheelUp", "WheelDown", "Mouse5", "Mouse4"];
-const MAIN_UNITS: f32 = 15.0;
 const NAV_UNITS: f32 = 3.0;
 const MOUSE_UNITS: f32 = 3.6;
-const BLOCK_GAP: f32 = 0.45;
 const TOTAL_UNITS: f32 = MAIN_UNITS + BLOCK_GAP + NAV_UNITS + BLOCK_GAP + MOUSE_UNITS;
 
 /// What is printed on the keycap.

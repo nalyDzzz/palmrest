@@ -568,10 +568,25 @@ impl Config {
         found.map(|(_, bound)| bound.names().into_iter().filter_map(Action::from_name).collect()).unwrap_or_default()
     }
 
-    /// The keys that do this action in a layout. Keys that do only this come first, then keys
-    /// that do it along with something else (such as also switching layout).
-    pub fn keys_for(&self, mode: Mode, action: Action) -> Vec<Input> {
-        let mut keys: Vec<(bool, Input)> = Vec::new();
+    /// Where the keyboard hand rests: the middle of the keys that move the character on foot
+    /// (W, A, S, D unless they were changed), as a place on the keyboard.
+    pub fn hand_rest(&self) -> (f32, f32) {
+        let places: Vec<(f32, f32)> = [Action::LsUp, Action::LsDown, Action::LsLeft, Action::LsRight]
+            .into_iter()
+            .flat_map(|action| self.bound_to(Mode::Foot, action))
+            .filter_map(|(_, input)| input.span())
+            .map(|(left, right, row)| ((left + right) / 2.0, row))
+            .collect();
+        if places.is_empty() {
+            return (3.2, 2.75); // W, A, S, D
+        }
+        let n = places.len() as f32;
+        (places.iter().map(|p| p.0).sum::<f32>() / n, places.iter().map(|p| p.1).sum::<f32>() / n)
+    }
+
+    /// The keys bound to this action in a layout, each with whether it also does something else.
+    fn bound_to(&self, mode: Mode, action: Action) -> Vec<(bool, Input)> {
+        let mut keys = Vec::new();
         for (name, bound) in self.keys.of(mode) {
             let Some(input) = Input::from_name(name) else { continue };
             let actions: Vec<Action> = bound.names().into_iter().filter_map(Action::from_name).collect();
@@ -579,8 +594,18 @@ impl Config {
                 keys.push((actions.len() > 1, input));
             }
         }
+        keys
+    }
+
+    /// The keys that do this action in a layout, the one to show first. Keys that do only this
+    /// come before keys that do it along with something else (such as also switching layout);
+    /// among those, the key nearest the keyboard hand comes first: with the default keys the
+    /// cross button is Space before Enter, whatever the order in the file.
+    pub fn keys_for(&self, mode: Mode, action: Action) -> Vec<Input> {
+        let home = self.hand_rest();
+        let mut keys: Vec<(bool, i32, Input)> = self.bound_to(mode, action).into_iter().map(|(shared, input)| (shared, (input.reach(home) * 100.0) as i32, input)).collect();
         keys.sort();
-        keys.into_iter().map(|(_, input)| input).collect()
+        keys.into_iter().map(|(_, _, input)| input).collect()
     }
 
     /// Sets what a key does in a layout. An empty list unbinds it.
@@ -730,8 +755,26 @@ mod tests {
         assert_eq!(names(Mode::Foot, Action::Press(Button::Triangle)), ["E", "F"], "E only interacts; F also switches layout");
         assert_eq!(names(Mode::Drive, Action::Press(Button::Triangle)), ["F"]);
         assert_eq!(names(Mode::Foot, Action::LsUp), ["W"]);
-        assert!(names(Mode::Foot, Action::Press(Button::Cross)).contains(&"Space".to_string()));
         assert!(names(Mode::Drive, Action::LsUp).contains(&"X".to_string()));
+    }
+
+    #[test]
+    fn keys_for_an_action_put_the_key_nearest_the_hand_first() {
+        let mut cfg = Config::default();
+        let names = |cfg: &Config, mode, action| cfg.keys_for(mode, action).into_iter().map(Input::name).collect::<Vec<_>>();
+        assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::Cross)), ["Space", "Enter"], "Space is under the thumb, Enter is across the keyboard");
+        assert_eq!(names(&cfg, Mode::Drive, Action::Press(Button::Cross)), ["Space", "Enter"]);
+        assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::Circle)), ["LCtrl", "Backspace"]);
+        assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::L1)), ["Tab", "Mouse4"], "a key by the hand before a side button not every mouse has");
+        assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::R3)), ["C", "MouseMiddle", "V"], "V clicks both sticks, so it comes last");
+        assert_eq!(names(&cfg, Mode::Drive, Action::Press(Button::L1)), ["MouseRight", "Tab"], "the main mouse buttons are always at hand");
+        // Someone who moves with the arrow keys has the hand at the other end: now Enter is the near one.
+        for (old, new, action) in [("W", "Up", Action::LsUp), ("S", "Down", Action::LsDown), ("A", "Left", Action::LsLeft), ("D", "Right", Action::LsRight)] {
+            cfg.bind(Mode::Foot, Input::from_name(old).unwrap(), &[]);
+            cfg.bind(Mode::Foot, Input::from_name(new).unwrap(), &[action]);
+        }
+        assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::Cross)), ["Enter", "Space"]);
+        assert_eq!(names(&cfg, Mode::Drive, Action::Press(Button::Cross)), ["Enter", "Space"], "the hand stays where it is when driving");
     }
 
     #[test]

@@ -33,17 +33,19 @@ fn main() {
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }
-        for step in 0..7 {
+        for step in 0..8 {
             std::thread::sleep(std::time::Duration::from_millis(900));
             if let Ok(mut s) = state.lock() {
+                use keys::sign;
                 use prompts::Glyph::*;
                 s.mode = if step % 2 == 0 { config::Mode::Drive } else { config::Mode::Foot };
                 // Second half of the test: with prompt hints, a different set each step.
                 s.prompts = match step {
                     2 => vec![(Triangle, "E".to_string())],
-                    3 => vec![(Triangle, "F".to_string()), (Circle, "Bksp".to_string()), (Cross, "Enter / Space".to_string()), (Square, "R".to_string())],
-                    4 => vec![(LeftStick, "WASD".to_string()), (RightStick, "Mouse".to_string())],
-                    5 => vec![(L1, "Tab / Side, back".to_string()), (R2, "Left click".to_string()), (L3, "Shift".to_string())],
+                    3 => vec![(Triangle, "F".to_string()), (Circle, format!("Ctrl / {}", sign::BACKSPACE)), (Cross, format!("{} / {}", sign::SPACE, sign::ENTER)), (Square, "R".to_string())],
+                    4 => vec![(LeftStick, "WASD".to_string()), (RightStick, "Mouse".to_string()), (L2, sign::MOUSE_RIGHT.to_string()), (R2, sign::MOUSE_LEFT.to_string())],
+                    5 => vec![(L1, format!("{} / {}4", sign::TAB, sign::MOUSE)), (R3, format!("C / {}", sign::MOUSE_MIDDLE)), (L3, format!("{} / {}", sign::SHIFT, sign::CAPS_LOCK))],
+                    6 => vec![(Square, format!("{}{}{}{}", sign::UP, sign::LEFT, sign::DOWN, sign::RIGHT)), (R1, format!("{}{}", sign::MOUSE_MIDDLE, sign::UP))],
                     _ => Vec::new(),
                 };
             }

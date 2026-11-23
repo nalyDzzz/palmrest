@@ -171,19 +171,19 @@ fn button_of(glyph: Glyph) -> Option<Button> {
     })
 }
 
-/// The keys to show for a prompt in a layout: "E", "Enter / Space", "WASD", "Mouse". `None` if
-/// nothing is bound to it.
+/// The keys to show for a prompt in a layout, nearest the hand first: "E / F", "WASD", "Mouse",
+/// with the signs of `Input::sign` for keys that have one. `None` if nothing is bound to it.
 pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
     match (glyph, button_of(glyph)) {
         (_, Some(button)) => {
-            let keys: Vec<String> = cfg.keys_for(mode, Action::Press(button)).into_iter().take(2).map(|k| k.label()).collect();
+            let keys: Vec<String> = cfg.keys_for(mode, Action::Press(button)).into_iter().take(2).map(|k| k.sign()).collect();
             (!keys.is_empty()).then(|| keys.join(" / "))
         }
         (Glyph::RightStick, None) => Some("Mouse".to_string()),
         (_, None) => {
             let keys: Vec<String> = [Action::LsUp, Action::LsLeft, Action::LsDown, Action::LsRight]
                 .into_iter()
-                .filter_map(|a| cfg.keys_for(mode, a).first().map(|k| k.label()))
+                .filter_map(|a| cfg.keys_for(mode, a).first().map(|k| k.sign()))
                 .collect();
             let letters = keys.iter().all(|k| k.chars().count() == 1);
             (!keys.is_empty()).then(|| keys.join(if letters { "" } else { " " }))
@@ -191,11 +191,10 @@ pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
     }
 }
 
-/// The one key to draw on a prompt itself: the first of its keys, in its shortest form ("RMB"
-/// where the list says "Right click").
+/// The one key to draw on a prompt itself: the first of its keys, the one nearest the hand.
 pub fn key_on_prompt(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
     match button_of(glyph) {
-        Some(button) => cfg.keys_for(mode, Action::Press(button)).first().map(|k| k.short()),
+        Some(button) => cfg.keys_for(mode, Action::Press(button)).first().map(|k| k.sign()),
         None => keys_shown(cfg, mode, glyph),
     }
 }
@@ -503,14 +502,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_mark_has_its_keys_and_the_prompt_gets_the_short_one() {
+    fn every_mark_has_its_keys_and_the_prompt_gets_the_nearest_one() {
+        use crate::keys::sign;
         let cfg = Config::default();
-        assert_eq!(keys_shown(&cfg, Mode::Foot, Glyph::L2).as_deref(), Some("Right click"));
-        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L2).as_deref(), Some("RMB"));
-        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::R2).as_deref(), Some("LMB"));
+        let one = |c: char| Some(c.to_string());
+        assert_eq!(keys_shown(&cfg, Mode::Foot, Glyph::Cross), Some(format!("{} / {}", sign::SPACE, sign::ENTER)), "Space is nearer the hand than Enter");
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::Cross), one(sign::SPACE));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::Circle).as_deref(), Some("Ctrl"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L2), one(sign::MOUSE_RIGHT));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::R2), one(sign::MOUSE_LEFT));
         assert_eq!(key_on_prompt(&cfg, Mode::Drive, Glyph::R2).as_deref(), Some("W"), "in a vehicle R2 is the throttle");
         assert_eq!(key_on_prompt(&cfg, Mode::Drive, Glyph::L2).as_deref(), Some("S"));
-        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L3).as_deref(), Some("Shift"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L3), one(sign::SHIFT));
+        assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L1), one(sign::TAB));
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::LeftStick).as_deref(), Some("WASD"));
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::RightStick).as_deref(), Some("Mouse"));
         // Every mark the finder knows leads to a key in both default layouts.
