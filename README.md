@@ -122,9 +122,15 @@ Everything is in `%APPDATA%\Palmrest`: `config.toml`, which the window writes an
 - **Windows only.**
 - **Some virus scanners distrust any program that watches the keyboard.** Palmrest reads keys only as described above, keeps nothing, and never goes online; the source is here to check.
 
-## Suggestions and problems
+## Bugs, ideas and pull requests
+
+I made Palmrest for myself, so I've been its only playtester, and there are probably bugs I haven't found yet. I've been really happy with how it turned out, though, so I figured I'd share it.
 
 I'm open to suggestions. If you have an idea, something doesn't work, or the overlay puts a key in the wrong place, [open an issue](https://github.com/nalyDzzz/palmrest/issues). For anything the overlay gets wrong, an F9 picture of that moment helps a lot.
+
+Feel free to fork it, open pull requests for new features, or do whatever you like with it. If you do, I'd appreciate a star!
+
+Happy gaming!
 
 ## Building it
 
