@@ -8,7 +8,7 @@ Palmrest runs on a Windows PC beside a Remote Play client. It turns your keyboar
 
 ![At an open car trunk with Palmrest on: the game's "Close" prompt shows E and "Loadout" shows Tab, and a small label at the bottom left says "On foot"](docs/overlay.jpg)
 
-It was written because holding a controller for hours hurts, and a story this long deserves hands that are not cramping.
+I made this because my hands kept cramping up from holding a controller during long sessions. I'm a PC gamer, and a keyboard and mouse is just what my hands are used to.
 
 Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interactive or Sony. It is meant for playing the story on your own.
 
