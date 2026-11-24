@@ -200,9 +200,11 @@ pub fn keys_shown(cfg: &Config, mode: Mode, glyph: Glyph) -> Option<String> {
         }
         (Glyph::RightStick, None) => Some("Mouse".to_string()),
         (_, None) => {
+            // A left-stick prompt on screen hands the stick to the on-foot keys in either layout
+            // (hot-wiring from the driver's seat: `Mapper::set_stick_wanted`), so those are the ones to show.
             let keys: Vec<String> = [Action::LsUp, Action::LsLeft, Action::LsDown, Action::LsRight]
                 .into_iter()
-                .filter_map(|a| cfg.keys_for(mode, a).first().map(|k| k.sign()))
+                .filter_map(|a| cfg.keys_for(Mode::Foot, a).first().map(|k| k.sign()))
                 .collect();
             let letters = keys.iter().all(|k| k.chars().count() == 1);
             (!keys.is_empty()).then(|| keys.join(if letters { "" } else { " " }))
@@ -546,6 +548,7 @@ mod tests {
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L3), one(sign::SHIFT));
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::L1), one(sign::TAB));
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::LeftStick).as_deref(), Some("WASD"));
+        assert_eq!(key_on_prompt(&cfg, Mode::Drive, Glyph::LeftStick).as_deref(), Some("WASD"), "hot-wiring: the left-stick prompt hands the stick to the on-foot keys");
         assert_eq!(key_on_prompt(&cfg, Mode::Foot, Glyph::RightStick).as_deref(), Some("Mouse"));
         // Every mark the finder knows leads to a key in both default layouts.
         for glyph in Glyph::ALL {

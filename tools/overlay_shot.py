@@ -6,6 +6,7 @@ screen, because the overlay is made of separate windows that sit above the game'
 
 usage: python tools/overlay_shot.py <picture.png> <out.png>
   AID=--overlay-test   the test aid to run (default --prompt-test)
+  EXTRA="--layout drive"   more arguments for the test aid
   WAIT=5.8             seconds to wait before copying the screen (default 2.6)
   CROPS="name=x,y,w,h;..."   also save these parts, enlarged three times, as <out>_<name>.png
 Needs pygame.
@@ -45,7 +46,8 @@ def main():
             time.sleep(0.01)
 
     pump(0.3)
-    app = subprocess.Popen([show_frame.EXE, os.environ.get("AID", "--prompt-test"), str(hwnd)], stdout=subprocess.PIPE, text=True)
+    app = subprocess.Popen([show_frame.EXE, os.environ.get("AID", "--prompt-test"), str(hwnd), *os.environ.get("EXTRA", "").split()],
+                           stdout=subprocess.PIPE, text=True, encoding="utf-8")
     pump(float(os.environ.get("WAIT", "2.6")))
 
     u32, gdi = ctypes.windll.user32, ctypes.windll.gdi32

@@ -61,10 +61,13 @@ fn main() {
     }
     // Test aid: `--prompt-test <window handle>` runs the real chain on that window for a few
     // seconds: copy its picture, find the prompts, steady them, look up the keys, show the label.
+    // With `--layout drive` the driving keys are in use.
     if let Some(i) = std::env::args().position(|a| a == "--prompt-test") {
         let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
         let cfg = config::Config::default();
-        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, ..Default::default() }));
+        let drive = std::env::args().collect::<Vec<_>>().windows(2).any(|w| w[0] == "--layout" && w[1] == "drive");
+        let mode = if drive { config::Mode::Drive } else { config::Mode::Foot };
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode, ..Default::default() }));
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }
@@ -95,7 +98,7 @@ fn main() {
                     .there(now, stays)
                     .iter()
                     .filter_map(|f| {
-                        let key = engine::key_on_prompt(&cfg, config::Mode::Foot, f.glyph)?;
+                        let key = engine::key_on_prompt(&cfg, mode, f.glyph)?;
                         Some(overlay::Spot { glyph: f.glyph, key, x: f.x.round() as i32, y: f.y.round() as i32, diameter: f.diameter.round() as i32 })
                     })
                     .take(overlay::SPOTS)
