@@ -6,7 +6,7 @@ Keyboard and mouse for GTA 6 on PS5.
 
 Palmrest runs on a Windows PC beside a Remote Play client. It turns your keyboard and mouse into a virtual controller, the client carries that controller to the console, and the game never knows the difference. It also reads the game's picture and shows your own key on top of each button prompt, so "press ✕" becomes "press Space".
 
-![The game's photo mode with Palmrest on: each button prompt down the right side has a key drawn on it, and a small label at the bottom left says "On foot"](docs/overlay.jpg)
+![At an open car trunk with Palmrest on: the game's "Close" prompt shows E and "Loadout" shows Tab, and a small label at the bottom left says "On foot"](docs/overlay.jpg)
 
 It was written because holding a controller for hours hurts, and a story this long deserves hands that are not cramping.
 
@@ -27,10 +27,20 @@ Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interact
 
 - A PC with Windows 10 or 11.
 - The [ViGEmBus driver](https://github.com/nefarius/ViGEmBus/releases), which is what lets a program act as a controller.
-- A Remote Play client that takes a controller on the PC and passes it to the PS5. Palmrest was written for and is used with **Veyra**, with the game's picture arriving through a capture card and the controller going out over Remote Play. chiaki-ng, Chiaki and Sony's PS Remote Play are in the list of windows Palmrest switches on for, but nobody has tried them yet. If you do, please say how it went.
+- A Remote Play client that takes a controller on the PC and passes it to the PS5. I use **Veyra** (see [How I play](#how-i-play)). chiaki-ng, Chiaki and Sony's PS Remote Play are in the list of windows Palmrest switches on for, but nobody has tried them yet. If you do, please say how it went.
 - A PS5 with Remote Play turned on, and the game.
 
 How the picture reaches your screen is up to you: the Remote Play stream itself, or a capture card.
+
+## How I play
+
+This is how I play the game, and the setup I highly recommend:
+
+- The PS5's picture goes into the PC through a **capture card** (mine is an Elgato HD60 S).
+- **[Veyra](https://github.com/Likely7/Veyra-NRVideo)** shows that picture on the PC, and it also supports sending a controller to the PS5 over **Remote Play**. That controller is Palmrest.
+- Palmrest runs beside it and turns my keyboard and mouse into that controller.
+
+The picture comes over the cable instead of as a Remote Play stream, so only the controller goes over the network. It has been a pretty smooth experience for me.
 
 ## Getting started
 
@@ -76,9 +86,12 @@ While you play, Palmrest looks at the game's picture a few times a second, finds
 
 | The game | With Palmrest |
 |:-:|:-:|
+| <img src="docs/trunk-game.png" width="400" alt="At the car trunk as the game draws it: triangle for Close, L1 for Loadout, and a greyed-out square for Storage"> | <img src="docs/trunk-palmrest.png" width="400" alt="The same with Palmrest on: E for Close, Tab for Loadout, and Storage left alone"> |
 | ![Photo mode's list of prompts as the game draws them: L2 and R2, the left and right sticks, triangle, L3, square, cross and circle](docs/prompts-game.png) | ![The same list with Palmrest on: two mouse buttons, WASD, Mouse, E, Shift, Space and Ctrl](docs/prompts-palmrest.png) |
 
-Each prompt gets the key nearest your hand: Space rather than Enter for ✕, Ctrl rather than Backspace for ○. A mouse button is drawn as a small mouse with that button filled in. "Restore default" is greyed out in the game, so it gets no key.
+Each prompt gets the key nearest your hand: Space rather than Enter for ✕, Ctrl rather than Backspace for ○. A mouse button is drawn as a small mouse with that button filled in. A prompt the game has greyed out, like "Storage" and "Restore default" above, gets no key.
+
+The overlay is still experimental. Every now and then you'll see a key drawn over the wrong icon, but it isn't common.
 
 ![Hot-wiring a car: the two stick prompts read WASD and Mouse, and the label at the bottom left says Driving](docs/hot-wiring.jpg)
 
@@ -108,6 +121,10 @@ Everything is in `%APPDATA%\Palmrest`: `config.toml`, which the window writes an
 - **It has been used on one PC, one PS5 and one game**, at a 1920 x 1080 picture. Other sizes are scaled for but have not been tried.
 - **Windows only.**
 - **Some virus scanners distrust any program that watches the keyboard.** Palmrest reads keys only as described above, keeps nothing, and never goes online; the source is here to check.
+
+## Suggestions and problems
+
+I'm open to suggestions. If you have an idea, something doesn't work, or the overlay puts a key in the wrong place, [open an issue](https://github.com/nalyDzzz/palmrest/issues). For anything the overlay gets wrong, an F9 picture of that moment helps a lot.
 
 ## Building it
 
