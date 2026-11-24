@@ -488,23 +488,33 @@ impl App {
             ui.add_space(6.0);
             let combine = ui.input(|i| i.modifiers.ctrl);
             let mut next: Option<Vec<Action>> = None;
+            // The jobs to pick from: every button, and the buttons that are a job together
+            // ("Ability  ·  L3 + R3"), so that one needs no Ctrl+click to find.
+            let jobs = self.cfg.jobs(mode);
+            let does = |job: &[Action]| job.iter().all(|a| actions.contains(a));
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-                for action in Action::ALL.into_iter().filter(|a| !a.switches_layout()) {
-                    let on = actions.contains(&action);
-                    let name = match self.cfg.labels.describe(mode, &[action]) {
-                        Some(game) => format!("{game}  ·  {}", action.label()),
-                        None => action.label().to_string(),
+                for job in &jobs {
+                    // A key that does two buttons' job together shows that as its job, not each half as well.
+                    let half = job.len() == 1 && jobs.iter().any(|set| set.len() > 1 && set.contains(&job[0]) && does(set));
+                    let on = does(job) && !half;
+                    let buttons = job.iter().map(|a| a.label()).collect::<Vec<_>>().join(" + ");
+                    let name = match self.cfg.labels.describe(mode, job) {
+                        Some(game) => format!("{game}  ·  {buttons}"),
+                        None => buttons,
                     };
-                    let text = RichText::new(name).color(if on { DARK_TEXT } else { tint(action) });
-                    let button = egui::Button::new(text).fill(if on { tint(action) } else { KEY }).min_size(Vec2::new(0.0, 26.0));
+                    let color = tint(job[0]);
+                    let text = RichText::new(name).color(if on { DARK_TEXT } else { color });
+                    let button = egui::Button::new(text).fill(if on { color } else { KEY }).min_size(Vec2::new(0.0, 26.0));
                     if ui.add(button).clicked() {
                         let mut list: Vec<Action> = actions.iter().copied().filter(|a| !a.switches_layout()).collect();
-                        if combine {
-                            // Ctrl+click adds this button to the key, or takes it off again.
-                            if on { list.retain(|a| *a != action) } else { list.push(action) }
+                        if !combine {
+                            list = job.clone();
+                        } else if does(job) {
+                            // Ctrl+click adds these buttons to the key, or takes them off again.
+                            list.retain(|a| !job.contains(a));
                         } else {
-                            list = vec![action];
+                            list.extend(job.iter().copied().filter(|a| !actions.contains(a)));
                         }
                         list.extend(actions.iter().copied().filter(|a| a.switches_layout()));
                         next = Some(list);
@@ -521,7 +531,7 @@ impl App {
                     }
                     next = Some(list);
                 }
-                ui.label(RichText::new("Ctrl+click a job to press two buttons with one key.").small().color(MUTED));
+                ui.label(RichText::new("Ctrl+click a job to press any two buttons with one key.").small().color(MUTED));
             });
             if let Some(list) = next {
                 self.cfg.bind(mode, input, &list);

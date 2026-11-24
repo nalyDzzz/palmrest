@@ -584,6 +584,20 @@ mod tests {
     }
 
     #[test]
+    fn the_ability_key_clicks_both_sticks_on_foot_and_in_a_vehicle() {
+        let mut m = mapper();
+        for mode in [Mode::Foot, Mode::Drive] {
+            m.set_mode(mode);
+            m.input(key("V"), true, 0.0);
+            let p = m.state(0.0, 0.001, (0.0, 0.0));
+            assert!(p.pressed(Button::L3) && p.pressed(Button::R3), "{mode:?}");
+            m.input(key("V"), false, 0.0);
+            let p = m.state(0.0, 0.001, (0.0, 0.0));
+            assert!(!p.pressed(Button::L3) && !p.pressed(Button::R3), "{mode:?}");
+        }
+    }
+
+    #[test]
     fn release_all_lets_go_of_everything() {
         let mut m = mapper();
         for k in ["W", "Space", "LShift"] {

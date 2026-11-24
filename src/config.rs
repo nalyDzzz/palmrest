@@ -11,6 +11,10 @@ use crate::pad::Button;
 /// The program's name: also the name of its folder for settings and saved pictures.
 pub const APP_NAME: &str = "Palmrest";
 
+/// The number of the starting keys as they are now. It goes up when a key is added to them, and
+/// a settings file from before then is given that key when it is read (see `Config::catch_up`).
+pub const KEYS_VERSION: u32 = 1;
+
 /// Which key layout is in use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -336,8 +340,17 @@ impl Labels {
     pub fn describe(&self, mode: Mode, actions: &[Action]) -> Option<&str> {
         let names = self.of(mode);
         let joined = actions.iter().map(|a| a.name()).collect::<Vec<_>>().join("+");
-        names.get(&joined).or_else(|| actions.iter().find_map(|a| names.get(a.name()))).map(String::as_str)
+        // The same buttons in another order are the same job: R3 with L3 is L3 with R3.
+        let reordered = || names.iter().find(|(name, _)| together(name).is_some_and(|set| set.len() == actions.len() && actions.iter().all(|a| set.contains(a)))).map(|(_, word)| word);
+        let whole = names.get(&joined).or_else(|| if actions.len() > 1 { reordered() } else { None });
+        whole.or_else(|| actions.iter().find_map(|a| names.get(a.name()))).map(String::as_str)
     }
+}
+
+/// The actions a name in the labels stands for when it names several done together: `"l3+r3"`.
+fn together(name: &str) -> Option<Vec<Action>> {
+    let actions: Option<Vec<Action>> = name.split('+').map(Action::from_name).collect();
+    actions.filter(|a| a.len() > 1)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -359,6 +372,10 @@ pub struct Config {
     /// Switch to the driving layout when the vehicle's name card appears on screen, and not when
     /// the get-in key is pressed. Getting out still switches at once.
     pub switch_on_name_card: bool,
+    /// Which starting keys this file has been given (see `KEYS_VERSION`). Palmrest keeps this
+    /// itself. A file without it is from before the number existed, hence the 0 for "missing".
+    #[serde(default)]
+    pub keys_version: u32,
     pub aim: AimConfig,
     pub steering: SteeringConfig,
     pub triggers: TriggerConfig,
@@ -376,6 +393,7 @@ impl Default for Config {
             game_fps: 30.0,
             sounds: true,
             switch_on_name_card: false,
+            keys_version: KEYS_VERSION,
             aim: AimConfig::default(),
             steering: SteeringConfig::default(),
             triggers: TriggerConfig::default(),
@@ -453,6 +471,7 @@ fn gta6_drive() -> Bindings {
         ("LShift", &["l3"]),
         ("H", &["circle"]),                   // headlights
         ("C", &["r3"]),                       // look behind
+        ("V", &["l3", "r3"]),                 // both stick clicks: the ability works in a vehicle too
         ("R", &["square"]),
         ("Q", &["dpad_left"]),                // radio
         ("Tab", &["l1"]),
@@ -635,14 +654,19 @@ pub fn load(path: &std::path::Path) -> (Config, Option<String>) {
     match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Config::default(), None),
         Err(e) => (Config::default(), Some(format!("Could not read {}: {e}", path.display()))),
-        Ok(text) => match toml::from_str::<Config>(&text) {
-            Ok(mut cfg) => {
-                cfg.sanitize();
-                (cfg, None)
-            }
+        Ok(text) => match parse(&text) {
+            Ok(cfg) => (cfg, None),
             Err(e) => (Config::default(), Some(format!("{} has a mistake, using defaults: {e}", path.display()))),
         },
     }
+}
+
+/// The text of a settings file as settings the engine can work with.
+fn parse(text: &str) -> Result<Config, toml::de::Error> {
+    let mut cfg: Config = toml::from_str(text)?;
+    cfg.catch_up();
+    cfg.sanitize();
+    Ok(cfg)
 }
 
 /// Writes the config. If the existing file was unreadable it is kept as `config.broken.toml`.
@@ -704,6 +728,45 @@ impl Config {
         let mut keys: Vec<(bool, i32, Input)> = self.bound_to(mode, action).into_iter().map(|(shared, input)| (shared, (input.reach(home) * 100.0) as i32, input)).collect();
         keys.sort();
         keys.into_iter().map(|(_, _, input)| input).collect()
+    }
+
+    /// The jobs a key can be given in the window: every button alone, and every set of buttons
+    /// with a name of its own in this layout (L3 with R3 is the ability), each set right after
+    /// the last of its buttons. Switching layout is not one of them: it can go with any job.
+    pub fn jobs(&self, mode: Mode) -> Vec<Vec<Action>> {
+        let place = |action: &Action| Action::ALL.iter().position(|a| a == action);
+        let sets: Vec<Vec<Action>> = self.labels.of(mode).keys().filter_map(|name| together(name)).filter(|set| !set.iter().any(|a| a.switches_layout())).collect();
+        let mut jobs = Vec::new();
+        for action in Action::ALL.into_iter().filter(|a| !a.switches_layout()) {
+            jobs.push(vec![action]);
+            jobs.extend(sets.iter().filter(|set| set.iter().max_by_key(|a| place(a)) == Some(&action)).cloned());
+        }
+        jobs
+    }
+
+    /// Gives settings written by an older version the keys that have been added to the starting
+    /// keys since. This happens once: the settings then say which starting keys they have seen,
+    /// so a key that is cleared afterwards stays cleared.
+    fn catch_up(&mut self) {
+        if self.keys_version < 1 {
+            // The ability (both stick clicks) can be used in a vehicle too.
+            self.add_key(Mode::Drive, "V", &[Action::Press(Button::L3), Action::Press(Button::R3)]);
+        }
+        self.keys_version = KEYS_VERSION;
+    }
+
+    /// Gives a key a job in a layout if the key is free there and no other key there does that job.
+    fn add_key(&mut self, mode: Mode, key: &str, job: &[Action]) {
+        let Some(input) = Input::from_name(key) else { return };
+        let reserved = [&self.toggle_key, &self.picture_key].into_iter().any(|name| Input::from_name(name) == Some(input));
+        let taken = self.keys.of(mode).keys().any(|name| Input::from_name(name) == Some(input));
+        let done_by_another = self.keys.of(mode).values().any(|bound| {
+            let does: Vec<Action> = bound.names().into_iter().filter_map(Action::from_name).collect();
+            job.iter().all(|a| does.contains(a))
+        });
+        if !reserved && !taken && !done_by_another {
+            self.bind(mode, input, job);
+        }
     }
 
     /// Sets what a key does in a layout. An empty list unbinds it.
@@ -881,6 +944,70 @@ mod tests {
         }
         assert_eq!(names(&cfg, Mode::Foot, Action::Press(Button::Cross)), ["Enter", "Space"]);
         assert_eq!(names(&cfg, Mode::Drive, Action::Press(Button::Cross)), ["Enter", "Space"], "the hand stays where it is when driving");
+    }
+
+    fn ability() -> Vec<Action> {
+        vec![Action::Press(Button::L3), Action::Press(Button::R3)]
+    }
+
+    #[test]
+    fn the_ability_has_a_key_in_both_layouts() {
+        let cfg = Config::default();
+        let v = Input::from_name("V").unwrap();
+        for mode in [Mode::Foot, Mode::Drive] {
+            assert_eq!(cfg.actions_of(mode, v), ability(), "{mode:?}");
+            assert_eq!(cfg.labels.describe(mode, &cfg.actions_of(mode, v)), Some("Ability"), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn buttons_named_together_are_a_job_of_their_own() {
+        let mut cfg = Config::default();
+        for mode in [Mode::Foot, Mode::Drive] {
+            let jobs = cfg.jobs(mode);
+            let at = jobs.iter().position(|job| *job == ability()).expect("the ability is a job");
+            assert_eq!(jobs[at - 1], [Action::Press(Button::R3)], "listed right after R3, the last of its buttons");
+            assert_eq!(jobs.iter().filter(|job| job.len() == 1).count(), Action::ALL.len() - 3, "every button alone, without the three that switch layout");
+            assert!(jobs.iter().flatten().all(|a| !a.switches_layout()), "getting in is a job with the switch added, not one to pick");
+        }
+        // Clicked together in the other order, it is still the ability.
+        assert_eq!(cfg.labels.describe(Mode::Drive, &[Action::Press(Button::R3), Action::Press(Button::L3)]), Some("Ability"));
+        assert_eq!(cfg.labels.describe(Mode::Drive, &[Action::Press(Button::L3)]), Some("Horn"));
+        // A set someone names in the file is offered too.
+        cfg.labels.drive.insert("l1+r1".into(), "Duck".into());
+        assert!(cfg.jobs(Mode::Drive).contains(&vec![Action::Press(Button::L1), Action::Press(Button::R1)]));
+        assert!(!cfg.jobs(Mode::Foot).contains(&vec![Action::Press(Button::L1), Action::Press(Button::R1)]));
+    }
+
+    #[test]
+    fn older_settings_get_the_ability_key_for_driving_once_and_only_if_v_is_free() {
+        let v = Input::from_name("V").unwrap();
+        // As the first version wrote them: no key for the ability while driving, no version number.
+        let as_written_then = |cfg: &Config| {
+            let text = toml::to_string_pretty(cfg).unwrap().replace(&format!("keys_version = {KEYS_VERSION}\n"), "");
+            assert!(!text.contains("keys_version"));
+            text
+        };
+        let mut old = Config::default();
+        old.bind(Mode::Drive, v, &[]);
+        let cfg = parse(&as_written_then(&old)).unwrap();
+        assert_eq!(cfg.actions_of(Mode::Drive, v), ability());
+        assert_eq!(cfg.keys_version, KEYS_VERSION);
+        assert!(Layout::compile(&cfg).1.is_empty());
+        // Cleared after that, it stays cleared.
+        let mut cleared = cfg.clone();
+        cleared.bind(Mode::Drive, v, &[]);
+        assert!(parse(&toml::to_string_pretty(&cleared).unwrap()).unwrap().actions_of(Mode::Drive, v).is_empty());
+        // A V that was given another job keeps it...
+        old.bind(Mode::Drive, v, &[Action::Press(Button::Circle)]);
+        assert_eq!(parse(&as_written_then(&old)).unwrap().actions_of(Mode::Drive, v), [Action::Press(Button::Circle)]);
+        // ...and nothing is added where another key is the ability already, or V is the on/off key.
+        old.bind(Mode::Drive, v, &[]);
+        old.bind(Mode::Drive, Input::from_name("B").unwrap(), &ability());
+        assert!(parse(&as_written_then(&old)).unwrap().actions_of(Mode::Drive, v).is_empty());
+        old.bind(Mode::Drive, Input::from_name("B").unwrap(), &[]);
+        old.toggle_key = "V".into();
+        assert!(parse(&as_written_then(&old)).unwrap().actions_of(Mode::Drive, v).is_empty());
     }
 
     #[test]

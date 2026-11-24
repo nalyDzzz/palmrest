@@ -56,6 +56,7 @@ Every one of these can be changed: click the key in the Palmrest window and pick
 | Tab | weapon wheel (L1) | Tab | L1 |
 | Shift | run (L3) | C | look behind (R3) |
 | C | look behind (R3) | Left click / Right click | R1 / L1 |
+| V | ability (L3 + R3) | V | ability (L3 + R3) |
 | M, P or Esc | map, pause | M, P or Esc | map, pause |
 | Arrow keys | d-pad | Arrow keys | d-pad |
 
