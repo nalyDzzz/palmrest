@@ -6,6 +6,8 @@ Keyboard and mouse for GTA 6 on PS5.
 
 Palmrest runs on a Windows PC beside a Remote Play client. It turns your keyboard and mouse into a virtual controller, the client carries that controller to the console, and the game never knows the difference. It also reads the game's picture and shows your own key on top of each button prompt, so "press ✕" becomes "press Space".
 
+![The game's photo mode with Palmrest on: each button prompt down the right side has a key drawn on it, and a small label at the bottom left says "On foot"](docs/overlay.jpg)
+
 It was written because holding a controller for hours hurts, and a story this long deserves hands that are not cramping.
 
 Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interactive or Sony. It is meant for playing the story on your own.
@@ -18,6 +20,8 @@ Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interact
 - **Triggers part of the way.** A key is all or nothing, but a few things in the game want L2 or R2 held half-way or let down slowly. The mouse wheel, or keys you choose, set how far the trigger keys pull.
 - **Change any key by clicking it** on a drawing of the keyboard.
 - **One exe.** No installer, no account, no network access. Settings are a text file.
+
+![The Palmrest window: a drawing of the keyboard with each key's job and button, the mouse buttons beside it, the aim settings below, and the buttons and sticks the console receives](docs/window.png)
 
 ## What you need
 
@@ -62,9 +66,23 @@ Every one of these can be changed: click the key in the Palmrest window and pick
 
 **Caps Lock** switches between the two sets by hand. **F9** saves a picture of the game into Palmrest's folder, and **F1** is the PS button.
 
+![Changing a key: F is picked on the keyboard drawing, and every job it can have is listed below it](docs/key-editor.png)
+
+Click a key and pick its job. A key can also switch between the two sets of keys, as F does here, and Ctrl+click on a job lets one key press two buttons at once.
+
 ## Your keys on the game's prompts
 
 While you play, Palmrest looks at the game's picture a few times a second, finds the button prompts (✕ ○ □ △, the sticks, L1 to R3), and draws the key for each one on top of it. A small label at the bottom left says which set of keys is in use.
+
+| The game | With Palmrest |
+|:-:|:-:|
+| ![Photo mode's list of prompts as the game draws them: L2 and R2, the left and right sticks, triangle, L3, square, cross and circle](docs/prompts-game.png) | ![The same list with Palmrest on: two mouse buttons, WASD, Mouse, E, Shift, Space and Ctrl](docs/prompts-palmrest.png) |
+
+Each prompt gets the key nearest your hand: Space rather than Enter for ✕, Ctrl rather than Backspace for ○. A mouse button is drawn as a small mouse with that button filled in. "Restore default" is greyed out in the game, so it gets no key.
+
+![Hot-wiring a car: the two stick prompts read WASD and Mouse, and the label at the bottom left says Driving](docs/hot-wiring.jpg)
+
+Hot-wiring, from the driver's seat. The driving keys are in use, as the label says, but while the game asks for the left stick, WASD work it, and the prompt says so.
 
 It can look more often, under *Overlay*: keys then appear sooner and stay on a prompt that moves, for more processor time. The window shows what each look costs on your PC.
 
