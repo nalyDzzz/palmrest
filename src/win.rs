@@ -52,6 +52,9 @@ const ENGINE_SILENT_AFTER: f64 = 0.3;
 const RENEW_MOUSE_EVERY: u32 = 250;
 
 static LIVE: AtomicBool = AtomicBool::new(false);
+/// Test aid (`--latency-test`): key presses and mouse buttons made by a program count as real
+/// ones. Normally they are let through untouched, so other tools that press keys keep working.
+pub static ACCEPT_INJECTED: AtomicBool = AtomicBool::new(false);
 /// Test aid: pass mouse movement on even when not live.
 pub static ALWAYS_REPORT_MOUSE: AtomicBool = AtomicBool::new(false);
 /// Mouse movement reports seen since the program started, live or not.
@@ -66,22 +69,34 @@ static HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static TX: OnceLock<Sender<Msg>> = OnceLock::new();
 static HOOK: Mutex<Hook> = Mutex::new(Hook::new());
 
-/// Seconds since the program started, from the high-resolution counter.
-pub fn now() -> f64 {
+/// The high-resolution counter's ticks per second, and its count when the program started.
+fn clock() -> (i64, i64) {
     static BASE: OnceLock<(i64, i64)> = OnceLock::new();
-    let (freq, start) = *BASE.get_or_init(|| {
+    *BASE.get_or_init(|| {
         let (mut freq, mut start) = (1i64, 0i64);
         unsafe {
             let _ = QueryPerformanceFrequency(&mut freq);
             let _ = QueryPerformanceCounter(&mut start);
         }
         (freq.max(1), start)
-    });
+    })
+}
+
+/// Seconds since the program started, from the high-resolution counter.
+pub fn now() -> f64 {
+    let (freq, start) = clock();
     let mut count = 0i64;
     unsafe {
         let _ = QueryPerformanceCounter(&mut count);
     }
     (count - start) as f64 / freq as f64
+}
+
+/// Where `now` counts from, in seconds of the high-resolution counter, which every program on
+/// the computer reads the same: add it to a `now` time to compare with another program's.
+pub fn clock_start() -> f64 {
+    let (freq, start) = clock();
+    start as f64 / freq as f64
 }
 
 /// Asks Windows for 1 ms timer resolution, so short waits are short.
@@ -154,7 +169,7 @@ fn hook() -> std::sync::MutexGuard<'static, Hook> {
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == 0 {
         let k = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
-        if k.flags.0 & LLKHF_INJECTED == 0 {
+        if k.flags.0 & LLKHF_INJECTED == 0 || ACCEPT_INJECTED.load(Relaxed) {
             if let Some(input) = Input::from_vk(k.vkCode) {
                 let down = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
                 let alt = k.flags.0 & LLKHF_ALTDOWN != 0;
@@ -174,7 +189,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     // Movement is by far the most common message and never ours: get out of its way first.
     if code == 0 && matches!(msg, WM_LBUTTONDOWN..=WM_XBUTTONUP) {
         let m = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
-        if m.flags & LLMHF_INJECTED == 0 {
+        if m.flags & LLMHF_INJECTED == 0 || ACCEPT_INJECTED.load(Relaxed) {
             let high = (m.mouseData >> 16) as u16;
             let side = if high == 1 { Input::MOUSE_4 } else { Input::MOUSE_5 };
             let (take, out) = match msg {

@@ -25,6 +25,12 @@ fn main() {
     if std::env::args().any(|a| a == "--mouse-test") {
         return mouse_test();
     }
+    // Test aid: `--latency-test <program> [--sensitivity <n>]`, see `latency_test`.
+    if let Some(i) = std::env::args().position(|a| a == "--latency-test") {
+        let program = std::env::args().nth(i + 1).unwrap_or_default();
+        let sensitivity = std::env::args().position(|a| a == "--sensitivity").and_then(|i| std::env::args().nth(i + 1)).and_then(|v| v.parse().ok());
+        return latency_test(&program, sensitivity.unwrap_or(config::AimConfig::default().sensitivity));
+    }
     // Test aid: `--overlay-test <window handle>` shows the label over that window for a few
     // seconds, switching between the two layouts, with nothing else running.
     if let Some(i) = std::env::args().position(|a| a == "--overlay-test") {
@@ -223,6 +229,64 @@ fn mouse_test() {
         }
     }
     println!("mouse reports {reports}, counts {counts}, other messages {other}");
+}
+
+/// `--latency-test <program>`: the real engine on the default settings (no overlay, no sounds,
+/// the settings file is not read), taking over while `<program>` is in front, and taking key
+/// presses and mouse buttons made by a program as well, so `tools/latency_bench.py` can make them
+/// and time what reaches the controller. Says `live yes` / `live no` as the takeover starts and
+/// stops. Runs until a line or the end of its input arrives, then prints, for every report a key
+/// or button caused, `timing <event reached the hook> <driver took the report>`, and for every
+/// mouse movement report `mouse <reached the app> <dx> <dy>`, times in seconds of the
+/// high-resolution counter, which the script reads too.
+fn latency_test(program: &str, sensitivity: f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut cfg = config::Config::default();
+    cfg.targets = vec![program.trim().to_ascii_lowercase()];
+    cfg.sounds = false;
+    cfg.overlay.enabled = false;
+    cfg.aim.sensitivity = sensitivity;
+    win::ACCEPT_INJECTED.store(true, Relaxed);
+    if let Ok(mut timings) = engine::TIMINGS.lock() {
+        *timings = Some(Vec::new());
+    }
+    if let Ok(mut log) = engine::MOUSE_LOG.lock() {
+        *log = Some(Vec::new());
+    }
+    let mut engine = match engine::Engine::start(cfg) {
+        Ok(engine) => engine,
+        Err(e) => return println!("FAILED {e}"),
+    };
+    engine.send(engine::Msg::Arm(true));
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let _ = std::io::stdin().read_line(&mut String::new());
+        let _ = stop_tx.send(());
+    });
+    println!("ready sensitivity {sensitivity}");
+    let (mut live, mut error) = (false, None::<String>);
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(std::time::Duration::from_millis(5)) {
+        let status = engine.status();
+        if status.live != live {
+            live = status.live;
+            println!("live {}", if live { "yes" } else { "no" });
+        }
+        if status.output_error != error {
+            error = status.output_error;
+            if let Some(e) = &error {
+                println!("FAILED {e}");
+            }
+        }
+    }
+    engine.stop();
+    let start = win::clock_start();
+    for (event, sent) in engine::TIMINGS.lock().ok().and_then(|mut t| t.take()).unwrap_or_default() {
+        println!("timing {:.7} {:.7}", start + event, start + sent);
+    }
+    for (t, dx, dy) in engine::MOUSE_LOG.lock().ok().and_then(|mut m| m.take()).unwrap_or_default() {
+        println!("mouse {:.7} {dx} {dy}", start + t);
+    }
+    println!("done");
 }
 
 /// `--pad-test`: plugs in the virtual controller and steps through every control, printing each

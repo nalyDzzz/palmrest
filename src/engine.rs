@@ -28,6 +28,23 @@ const HINT_STAYS: f64 = 0.3;
 /// A prompt listed in the label is dropped after going unseen for about this long.
 const LISTED_STAYS: f64 = 0.75;
 
+/// Test aid (`--latency-test`): when `Some`, every controller report caused by a key, mouse
+/// button or wheel event is noted as (when the event reached the hook, when the driver took the
+/// report), in `win::now` seconds.
+pub static TIMINGS: Mutex<Option<Vec<(f64, f64)>>> = Mutex::new(None);
+
+/// Test aid (`--latency-test`): when `Some`, every mouse movement report taken while live, as
+/// (when it reached the app in `win::now` seconds, dx, dy).
+pub static MOUSE_LOG: Mutex<Option<Vec<(f64, i32, i32)>>> = Mutex::new(None);
+
+fn note_timing(event: f64) {
+    if let Ok(mut timings) = TIMINGS.lock() {
+        if let Some(list) = timings.as_mut() {
+            list.push((event, win::now()));
+        }
+    }
+}
+
 /// Everything sent to the engine: input events from the hooks, and requests from the window.
 #[derive(Debug)]
 pub enum Msg {
@@ -240,6 +257,8 @@ fn run(
     let mut last_step = win::now();
     let (mut next_foreground, mut next_status) = (0.0f64, 0.0f64);
     let mut last_sent: Option<(PadState, f64)> = None;
+    // The first key or button event whose report has not been taken by the driver yet.
+    let mut waiting_since: Option<f64> = None;
     let (mut mouse_reports, mut moving_since, mut mouse_rate) = (0u32, None::<f64>, 0.0f32);
     let mut game_window = 0isize;
     let (mut picture, mut pictures_saved) = (None::<Result<String, String>>, 0u32);
@@ -269,6 +288,11 @@ fn run(
                 Msg::Mouse { t, dx, dy } => {
                     if live {
                         aim.feed(t, dx, dy);
+                        if let Ok(mut log) = MOUSE_LOG.lock() {
+                            if let Some(list) = log.as_mut() {
+                                list.push((t, dx, dy));
+                            }
+                        }
                         mouse_reports += 1;
                         moving_since.get_or_insert(t);
                     }
@@ -280,6 +304,7 @@ fn run(
                             mode_sound(&cfg, mode);
                         }
                         urgent = true;
+                        waiting_since.get_or_insert(t);
                     }
                 }
                 Msg::Wheel { t, input } => {
@@ -288,6 +313,7 @@ fn run(
                             mode_sound(&cfg, mode);
                         }
                         urgent = true;
+                        waiting_since.get_or_insert(t);
                     }
                 }
                 Msg::Toggle => {
@@ -440,11 +466,17 @@ fn run(
             last_sent = Some((pad, now));
             if let Ok(out) = &mut output {
                 match out.send(&pad) {
-                    Ok(Sent::Taken) => {}
+                    Ok(Sent::Taken) => {
+                        if let Some(t) = waiting_since.take() {
+                            note_timing(t);
+                        }
+                    }
                     Ok(Sent::Again) => last_sent = None, // not delivered: the next pass sends it again
                     Err(e) => output = Err(e),
                 }
             }
+        } else {
+            waiting_since = None; // the event changed nothing that is sent
         }
 
         if now >= next_status {
