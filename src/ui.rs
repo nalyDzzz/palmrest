@@ -1,5 +1,5 @@
 //! The window: whether the takeover is on, a keyboard showing what every key does (click a key to
-//! change it), the aim settings, and a live view of the controller the console receives.
+//! change it), the aim settings, and a live view of the controller Palmrest sends.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -682,9 +682,12 @@ impl App {
         });
     }
 
-    /// The controller the console receives: sticks, triggers and every button, lit while pressed.
+    /// The controller Palmrest sends: sticks, triggers and every button, lit while pressed. It
+    /// says nothing about whether a Remote Play program is carrying it on, which the note under
+    /// the title spells out: someone seeing buttons light up here took the console to have them.
     fn controller(&self, ui: &mut egui::Ui, pad: &PadState) {
-        ui.label(RichText::new("WHAT THE CONSOLE RECEIVES").font(self.font(13.0)).color(MUTED));
+        ui.label(RichText::new("WHAT PALMREST SENDS").font(self.font(13.0)).color(MUTED));
+        note(ui, "The virtual controller. Your Remote Play program has to carry it to the console.");
         let width = ui.available_width().clamp(260.0, 380.0);
         let (response, painter) = ui.allocate_painter(Vec2::new(width, width * 0.5), Sense::hover());
         let r = response.rect;
