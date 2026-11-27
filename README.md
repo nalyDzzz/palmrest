@@ -21,7 +21,7 @@ Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interact
 - **Change any key by clicking it** on a drawing of the keyboard.
 - **One exe.** No installer, no account, no network access. Settings are a text file.
 
-![The Palmrest window: a drawing of the keyboard with each key's job and button, the mouse buttons beside it, the aim settings below, and the buttons and sticks the console receives](docs/window.png)
+![The Palmrest window: a drawing of the keyboard with each key's job and button, the mouse buttons beside it, the aim settings below, and the buttons and sticks Palmrest sends](docs/window.png)
 
 ## What you need
 
@@ -42,15 +42,34 @@ This is how I play the game, and the setup I highly recommend:
 
 The picture comes over the cable instead of as a Remote Play stream, so only the controller goes over the network. It has been a pretty smooth experience for me.
 
+### Turning on the controller in Veyra
+
+The capture card only brings the picture in. The controller goes to the PS5 over Remote Play, and in Veyra that is a separate switch. This step tripped me up too:
+
+1. On the PS5, turn on Remote Play (*Settings > System > Remote Play*).
+2. In Veyra, pair the PS5 once under **PS5 streaming**. Veyra's [user guide](https://github.com/Likely7/Veyra-NRVideo/wiki) covers the pairing.
+3. Open **Capture card** and, under **PS5 controller control**, turn on **Control the PS5 through Remote Play**. Then press **Connect and start**.
+4. It should say **PS5 controller control connected**.
+
+Until it says that, nothing you press reaches the game, even though the picture shows, the overlay works and the buttons light up in the Palmrest window.
+
 ## Getting started
 
 1. Install ViGEmBus and restart if it asks.
 2. Download `palmrest.exe` from the [latest release](https://github.com/nalyDzzz/palmrest/releases/latest) and put it wherever you like. There is nothing to install. The exe is not signed, so Windows may say it comes from an unknown publisher: *More info*, then *Run anyway*. You can also [build it yourself](#building-it).
-3. Start `palmrest.exe`, then your Remote Play client, and connect to the console.
+3. Start `palmrest.exe`, then your Remote Play client, and connect to the console. Seeing the game's picture is not enough: the client has to be sending a controller. In Veyra with a capture card that is [its own switch](#turning-on-the-controller-in-veyra).
 4. Click into the game's window and press **F10**. From now on the keyboard and mouse are the controller. **F10** again gives them back; so does switching to another window with Alt+Tab.
 5. In the Palmrest window, under *Aim*, set the mouse speed to taste. If small mouse movements do nothing, or tiny ones jump, use *Find the game's dead zone* on the right.
 
 Palmrest only takes keys while it is switched on **and** the game's window is in front. Everywhere else your keyboard and mouse are untouched.
+
+### If the game does not react
+
+If the overlay shows and the buttons light up in the Palmrest window, but nothing happens in the game, the controller is not reaching the console. Three things to check:
+
+- **A red line in the Palmrest window** saying "No controller is being sent" means the ViGEmBus driver is missing.
+- **In Veyra**, it has to say **PS5 controller control connected**. See [Turning on the controller in Veyra](#turning-on-the-controller-in-veyra).
+- **A normal controller plugged into the PC**, not the PS5, should work the game through your Remote Play client. If it does not, the client's setup is where to look. If it does and Palmrest still does nothing, please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
 
 ## The keys it starts with
 
