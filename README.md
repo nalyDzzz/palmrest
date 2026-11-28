@@ -18,6 +18,7 @@ Palmrest is not made, endorsed or supported by Rockstar Games, Take-Two Interact
 - **Two sets of keys**, on foot and driving, because W cannot be both "walk forward" and "accelerate". One key switches between them.
 - **Your keys on the game's prompts.** A small see-through layer on top of the game finds the button prompts on screen and draws the key you would press, on the prompt itself. Nothing is drawn into the game's own picture.
 - **Triggers part of the way.** A key is all or nothing, but a few things in the game want L2 or R2 held half-way or let down slowly. The mouse wheel, or keys you choose, set how far the trigger keys pull.
+- **A real controller as well**, for the things that are made for two thumbs, like flying. Connect one to the PC, pick it up and it works; put it down and the keys work.
 - **Change any key by clicking it** on a drawing of the keyboard.
 - **One exe.** No installer, no account, no network access. Settings are a text file.
 
@@ -128,6 +129,21 @@ Under *Triggers*:
 - **With keys.** Give any key the job *L2 less*, *L2 more*, *R2 less*, *R2 more*, *L2 + R2 less* or *L2 + R2 more*. The pull moves while that key is held and stays when you let go.
 
 The label on the game shows the pull while it is not all the way, and it goes back to all the way a few seconds after you let go of the triggers.
+
+## A controller as well
+
+Some things in the game are made for two thumbs, flying most of all. Connect a DualSense or a DualShock 4 to the PC, by cable or Bluetooth, and Palmrest adds what you do on it to what the keys and the mouse do. There is nothing to switch:
+
+- **Pick it up and it works.** It counts from the moment you touch a stick, a trigger or a button.
+- **Put it down and the keys work.** The next key press or mouse movement takes over again, so a controller lying on the desk presses nothing by its own weight.
+- While you play on the controller, the keys drawn on the game's prompts are hidden, so you can see which button the game is asking for.
+- It works with the takeover (F10) turned off too.
+
+The window says which controller it found, under *Controller*, and its sticks and buttons show in the drawing of what Palmrest sends. The controller has to be connected to the PC, not to the PS5.
+
+Not carried over: rumble, the adaptive triggers, the motion sensors and swipes on the touchpad. A click on the touchpad is.
+
+This part is new and has not been played with yet. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
 
 ## Settings and pictures
 

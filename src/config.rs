@@ -294,6 +294,20 @@ impl Default for OverlayConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControllerConfig {
+    /// Read a DualSense or DualShock 4 connected to this computer and add what it does to what
+    /// the keys and the mouse do, so it can be picked up for the things a keyboard is bad at.
+    pub pass_through: bool,
+}
+
+impl Default for ControllerConfig {
+    fn default() -> Self {
+        ControllerConfig { pass_through: true }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Keys {
@@ -380,6 +394,7 @@ pub struct Config {
     pub steering: SteeringConfig,
     pub triggers: TriggerConfig,
     pub overlay: OverlayConfig,
+    pub controller: ControllerConfig,
     pub keys: Keys,
     pub labels: Labels,
 }
@@ -398,6 +413,7 @@ impl Default for Config {
             steering: SteeringConfig::default(),
             triggers: TriggerConfig::default(),
             overlay: OverlayConfig::default(),
+            controller: ControllerConfig::default(),
             keys: Keys { foot: gta6_foot(), drive: gta6_drive() },
             labels: Labels { foot: gta6_foot_names(), drive: gta6_drive_names() },
         }

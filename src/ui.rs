@@ -69,10 +69,11 @@ enum Group {
     Driving,
     Triggers,
     Overlay,
+    Controller,
 }
 
 impl Group {
-    const ALL: [Group; 4] = [Group::Aim, Group::Driving, Group::Triggers, Group::Overlay];
+    const ALL: [Group; 5] = [Group::Aim, Group::Driving, Group::Triggers, Group::Overlay, Group::Controller];
 
     fn title(self) -> &'static str {
         match self {
@@ -80,6 +81,7 @@ impl Group {
             Group::Driving => "DRIVING",
             Group::Triggers => "TRIGGERS",
             Group::Overlay => "OVERLAY",
+            Group::Controller => "CONTROLLER",
         }
     }
 
@@ -90,6 +92,7 @@ impl Group {
             Group::Driving => "The driving keys, and switching between them and the on-foot keys.",
             Group::Triggers => "For the few things in the game that want L2 or R2 held part of the way or let down slowly, like lifting weights. A key is all or nothing; these set how far it pulls.",
             Group::Overlay => "What is drawn on top of the game while you play.",
+            Group::Controller => "A real controller next to the keyboard and mouse, for the things that are made for two thumbs, like flying.",
         }
     }
 }
@@ -560,6 +563,7 @@ impl App {
             Group::Driving => self.driving_settings(ui),
             Group::Triggers => self.trigger_settings(ui),
             Group::Overlay => self.overlay_settings(ui, status),
+            Group::Controller => self.controller_settings(ui, status),
         };
         if changed {
             self.changed();
@@ -629,6 +633,24 @@ impl App {
             "More checks: keys appear sooner and follow a prompt that moves, for more processor time. 4 is the calm setting.".to_string()
         };
         changed |= described(ui, o.enabled && o.prompts, checks, &cost);
+        changed
+    }
+
+    fn controller_settings(&mut self, ui: &mut egui::Ui, status: &Status) -> bool {
+        let on = &mut self.cfg.controller.pass_through;
+        let changed = ui.checkbox(on, "Also use a controller connected to this computer").changed();
+        note(ui, "A DualSense or DualShock 4, by cable or Bluetooth. Pick it up and it works, put it down and the keys work. It counts from the moment you touch it until you next press a key or move the mouse, so one lying on the desk presses nothing by its own weight. It works with the takeover turned off too.");
+        ui.add_space(6.0);
+        match (*on, status.controller) {
+            (true, Some(name)) => {
+                ui.label(RichText::new(format!("Connected: {name}.")).color(LIVE));
+                note(ui, "Its sticks and buttons show in the controller on the right. While you play on it, the keys on the game's prompts are hidden so you can see the game's own buttons.");
+            }
+            (true, None) => note(ui, "No controller found. Connect one and it is picked up within a second or two."),
+            (false, _) => {}
+        }
+        ui.add_space(6.0);
+        note(ui, "Not carried over: rumble, the adaptive triggers, the motion sensors and swipes on the touchpad (a click on it is).");
         changed
     }
 
@@ -805,6 +827,9 @@ impl eframe::App for App {
                     self.settings(&mut columns[0], &status);
                     let right = &mut columns[1];
                     self.controller(right, &status.pad);
+                    if let Some(name) = status.controller {
+                        right.label(RichText::new(format!("Your controller is connected: {name}")).small().color(LIVE));
+                    }
                     if status.mouse_rate > 0.0 {
                         right.label(RichText::new(format!("Mouse: about {:.0} reports a second", status.mouse_rate)).small().color(MUTED));
                     }

@@ -4,6 +4,7 @@
 mod aim;
 mod config;
 mod engine;
+mod gamepad;
 mod hook;
 mod keys;
 mod mapper;
@@ -24,6 +25,15 @@ fn main() {
     }
     if std::env::args().any(|a| a == "--mouse-test") {
         return mouse_test();
+    }
+    // Test aid: `--controller-test [--virtual] [--seconds <n>]`, see `gamepad::test`. With
+    // `--through-engine` the readings go the whole way instead, see `controller_through_engine`.
+    if std::env::args().any(|a| a == "--controller-test") {
+        let seconds = std::env::args().position(|a| a == "--seconds").and_then(|i| std::env::args().nth(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(5.0);
+        if std::env::args().any(|a| a == "--through-engine") {
+            return controller_through_engine(seconds);
+        }
+        return gamepad::test(std::env::args().any(|a| a == "--virtual"), seconds);
     }
     // Test aid: `--latency-test <program> [--sensitivity <n>]`, see `latency_test`.
     if let Some(i) = std::env::args().position(|a| a == "--latency-test") {
@@ -136,6 +146,10 @@ fn main() {
     // Test aid: `--dry` opens the window only to be looked at (see `win::DRY`).
     if std::env::args().any(|a| a == "--dry") {
         win::DRY.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    // Test aid: with `--dry`, `--virtual-controllers` (see `gamepad::VIRTUAL_TOO`).
+    if std::env::args().any(|a| a == "--virtual-controllers") {
+        gamepad::VIRTUAL_TOO.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let path = config::config_path();
     let (cfg, load_error) = config::load(&path);
@@ -286,6 +300,38 @@ fn latency_test(program: &str, sensitivity: f32) {
     for (t, dx, dy) in engine::MOUSE_LOG.lock().ok().and_then(|mut m| m.take()).unwrap_or_default() {
         println!("mouse {:.7} {dx} {dy}", start + t);
     }
+    println!("done");
+}
+
+/// `--controller-test --through-engine`: the real engine, looking only (no keys or mouse read,
+/// no controller plugged in, nothing sent), reading whatever ViGEmBus controller is there as if
+/// it were a real one, and printing what it would send whenever that changes. This is the path
+/// a real controller's input takes, watched without owning one.
+fn controller_through_engine(seconds: f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    win::DRY.store(true, Relaxed);
+    gamepad::VIRTUAL_TOO.store(true, Relaxed);
+    let mut cfg = config::Config::default();
+    cfg.overlay.enabled = false;
+    let mut engine = match engine::Engine::start(cfg) {
+        Ok(engine) => engine,
+        Err(e) => return println!("FAILED {e}"),
+    };
+    let started = std::time::Instant::now();
+    let (mut last, mut changes) = (None, 0u32);
+    while started.elapsed().as_secs_f64() < seconds {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let status = engine.status();
+        let now = (status.controller, status.pad);
+        if last != Some(now) {
+            last = Some(now);
+            changes += 1;
+            let held: Vec<&str> = pad::Button::ALL.into_iter().filter(|b| status.pad.pressed(*b)).map(|b| b.name()).collect();
+            println!("{:6.3} controller {:?}: left {:+.2} {:+.2} right {:+.2} {:+.2} l2 {:.2} r2 {:.2} buttons {held:?}", started.elapsed().as_secs_f64(), status.controller, status.pad.lx, status.pad.ly, status.pad.rx, status.pad.ry, status.pad.l2, status.pad.r2);
+        }
+    }
+    engine.stop();
+    println!("{changes} changes in {seconds} seconds");
     println!("done");
 }
 

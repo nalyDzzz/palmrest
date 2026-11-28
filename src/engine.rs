@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::aim::{Aim, AimParams};
 use crate::config::{Action, Config, Layout, Mode};
+use crate::gamepad::{self, Reading, Real};
 use crate::keys::Input;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
@@ -27,6 +28,9 @@ const RESEND_EVERY: f64 = 0.1;
 const HINT_STAYS: f64 = 0.3;
 /// A prompt listed in the label is dropped after going unseen for about this long.
 const LISTED_STAYS: f64 = 0.75;
+/// Mouse movement of at least this many counts within this many seconds means a hand is on the
+/// mouse. Less can be the desk being bumped while the real controller is held.
+const MOUSE_IN_HAND: (i32, f64) = (40, 0.25);
 
 /// Test aid (`--latency-test`): when `Some`, every controller report caused by a key, mouse
 /// button or wheel event is noted as (when the event reached the hook, when the driver took the
@@ -65,6 +69,8 @@ pub enum Msg {
     PictureSaved(Result<String, String>),
     /// What one look at the game picture found (`None`: the picture could not be read).
     Look(Option<Look>),
+    /// What a real controller connected to the computer is doing (`None`: it has gone).
+    Controller(Option<Reading>),
     Quit,
 }
 
@@ -106,6 +112,8 @@ pub struct Status {
     /// at the moment), and how long one search takes, in milliseconds.
     pub checks_per_second: f32,
     pub check_ms: f32,
+    /// The real controller whose input is being added, if one is connected and wanted.
+    pub controller: Option<&'static str>,
 }
 
 impl Status {
@@ -140,8 +148,15 @@ impl Engine {
             pictures_saved: 0,
             checks_per_second: 0.0,
             check_ms: 0.0,
+            controller: None,
         }));
         win::start_input(tx.clone())?;
+        let dry = win::DRY.load(std::sync::atomic::Ordering::Relaxed);
+        let virtual_too = dry && gamepad::VIRTUAL_TOO.load(std::sync::atomic::Ordering::Relaxed);
+        if !dry || virtual_too {
+            gamepad::set_wanted(cfg.controller.pass_through);
+            gamepad::start(tx.clone(), virtual_too);
+        }
         let shared = status.clone();
         let own = tx.clone();
         // The label on top of the game. If it cannot start, the app works without it.
@@ -270,10 +285,16 @@ fn run(
     // When the last look came in, the usual time from one look to the next, and how long a look takes.
     let (mut last_look, mut look_gap, mut look_took) = (0.0f64, 0.0f64, 0.0f32);
     mapper.set_hold_get_in(cfg.switch_on_name_card);
+    // A real controller connected to the computer, and when the keys or the mouse were last used.
+    let mut real = Real::default();
+    let mut keys_used = 0.0f64;
+    // Mouse movement lately: since when it is being added up, and how many counts so far.
+    let mut mouse_moved = (0.0f64, 0i32);
 
     'run: loop {
-        // Full speed while playing, testing, or while the last state still has to be delivered.
-        let busy = live || test.is_some() || last_sent.is_none();
+        // Full speed while playing, testing, while the last state still has to be delivered, or
+        // while a press on the real controller waits to be passed on.
+        let busy = live || test.is_some() || last_sent.is_none() || real.waiting(win::now());
         let tick = if busy { TICK } else { IDLE_TICK };
         let wait = (last_step + tick - win::now()).max(0.0);
         let mut next = match rx.recv_timeout(Duration::from_secs_f64(wait)) {
@@ -295,6 +316,13 @@ fn run(
                         }
                         mouse_reports += 1;
                         moving_since.get_or_insert(t);
+                        if t - mouse_moved.0 > MOUSE_IN_HAND.1 {
+                            mouse_moved = (t, 0);
+                        }
+                        mouse_moved.1 += dx.abs() + dy.abs();
+                        if mouse_moved.1 >= MOUSE_IN_HAND.0 {
+                            keys_used = t;
+                        }
                     }
                 }
                 Msg::Input { t, input, down } => {
@@ -305,6 +333,9 @@ fn run(
                         }
                         urgent = true;
                         waiting_since.get_or_insert(t);
+                        if down {
+                            keys_used = t;
+                        }
                     }
                 }
                 Msg::Wheel { t, input } => {
@@ -314,6 +345,7 @@ fn run(
                         }
                         urgent = true;
                         waiting_since.get_or_insert(t);
+                        keys_used = t;
                     }
                 }
                 Msg::Toggle => {
@@ -335,6 +367,7 @@ fn run(
                     win::set_bound(&layout);
                     mapper.set_layout(layout, cfg.steering.smooth);
                     mapper.set_hold_get_in(cfg.switch_on_name_card);
+                    gamepad::set_wanted(cfg.controller.pass_through);
                     warnings = w;
                     next_foreground = 0.0;
                 }
@@ -396,6 +429,10 @@ fn run(
                 Msg::PictureSaved(result) => {
                     pictures_saved += result.is_ok() as u32;
                     picture = Some(result);
+                }
+                Msg::Controller(reading) => {
+                    real.heard(reading, win::now());
+                    urgent = true; // a stick moved or a button changed: out at once, like a key
                 }
                 Msg::Quit => break 'run,
             }
@@ -461,6 +498,15 @@ fn run(
             }
         }
 
+        // The real controller, while it is the one in the hands, is added to whatever the keys
+        // and the mouse are doing, and also while they are doing nothing at all: turned off, or
+        // with another window in front. Whether the game gets it then is up to the Remote Play
+        // program, as for any controller.
+        let pad = real.added_to(pad, cfg.controller.pass_through, keys_used, now);
+        // And while it is, nothing is drawn on the game: a key on a prompt would hide the
+        // button to press.
+        let in_hands = real.in_hands(keys_used);
+
         let resend = last_sent.is_none_or(|(sent, at)| sent != pad || now - at >= RESEND_EVERY);
         if resend {
             last_sent = Some((pad, now));
@@ -509,7 +555,7 @@ fn run(
                 let shown = listed.filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
                 // A trigger set to a part pull is always worth showing: it changes what its key does.
                 let pull = [Glyph::L2, Glyph::R2].into_iter().zip(mapper.pull()).filter(|(_, far)| *far < 0.995).map(|(g, far)| (g, format!("{:.0}%", far * 100.0))).collect();
-                let next = OverlayState { show: live && cfg.overlay.enabled, game_window, mode, pull, prompts: shown, spots };
+                let next = OverlayState { show: live && cfg.overlay.enabled && !in_hands, game_window, mode, pull, prompts: shown, spots };
                 if *o != next {
                     *o = next;
                 }
@@ -523,6 +569,7 @@ fn run(
                 s.output_error = output.as_ref().err().cloned();
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
+                s.controller = real.name();
                 s.held = if live { mapper.held_bits() } else { [0; Input::COUNT.div_ceil(64)] };
                 let looking = last_look > 0.0 && now - last_look < 1.5 && look_gap > 0.0;
                 (s.checks_per_second, s.check_ms) = if looking { ((1.0 / look_gap) as f32, look_took * 1000.0) } else { (0.0, 0.0) };

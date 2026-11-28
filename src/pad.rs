@@ -130,6 +130,17 @@ impl PadState {
         }
     }
 
+    /// This controller and another held at once, as one: a button is down if either has it
+    /// down, a trigger is pulled as far as the further of the two, and a stick is where the one
+    /// pushed further from its middle is. (Adding the sticks up would let a worn stick at rest
+    /// pull the other off its line.)
+    pub fn with(self, other: PadState) -> PadState {
+        let further = |a: (f32, f32), b: (f32, f32)| if b.0.hypot(b.1) > a.0.hypot(a.1) { b } else { a };
+        let (lx, ly) = further((self.lx, self.ly), (other.lx, other.ly));
+        let (rx, ry) = further((self.rx, self.ry), (other.rx, other.ry));
+        PadState { buttons: self.buttons | other.buttons, lx, ly, rx, ry, l2: self.l2.max(other.l2), r2: self.r2.max(other.r2) }
+    }
+
     pub fn press(&mut self, b: Button) {
         self.buttons |= b.bit();
         match b {
@@ -137,5 +148,27 @@ impl PadState {
             Button::R2 => self.r2 = 1.0,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_controllers_held_at_once_are_one() {
+        let mut keys = PadState { lx: 0.0, ly: 1.0, rx: 0.4, ry: 0.0, r2: 0.4, ..PadState::default() };
+        keys.buttons = Button::R2.bit() | Button::Cross.bit();
+        let mut real = PadState { lx: 0.05, ly: -0.02, rx: -1.0, ry: 0.0, l2: 0.7, r2: 0.1, ..PadState::default() };
+        real.buttons = Button::L2.bit() | Button::Circle.bit();
+        let both = keys.with(real);
+        assert_eq!((both.lx, both.ly), (0.0, 1.0), "the stick pushed further wins whole: a resting one does not bend it");
+        assert_eq!((both.rx, both.ry), (-1.0, 0.0));
+        assert_eq!((both.l2, both.r2), (0.7, 0.4));
+        for b in [Button::R2, Button::Cross, Button::L2, Button::Circle] {
+            assert!(both.pressed(b), "{b:?}");
+        }
+        assert_eq!(both, real.with(keys), "whichever is named first");
+        assert_eq!(keys.with(PadState::default()), keys);
     }
 }
