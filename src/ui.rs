@@ -641,16 +641,28 @@ impl App {
         let changed = ui.checkbox(on, "Also use a controller connected to this computer").changed();
         note(ui, "A DualSense or DualShock 4, by cable or Bluetooth. Pick it up and it works, put it down and the keys work. It counts from the moment you touch it until you next press a key or move the mouse, so one lying on the desk presses nothing by its own weight. It works with the takeover turned off too.");
         ui.add_space(6.0);
-        match (*on, status.controller) {
+        let wanted = *on;
+        match (wanted, status.controller) {
             (true, Some(name)) => {
                 ui.label(RichText::new(format!("Connected: {name}.")).color(LIVE));
-                note(ui, "Its sticks and buttons show in the controller on the right. While you play on it, the keys on the game's prompts are hidden so you can see the game's own buttons.");
+                if status.aside.away() {
+                    note(ui, "Palmrest has stepped aside: your Remote Play program is reading the controller itself. Press a key or move the mouse to come back.");
+                } else {
+                    note(ui, "Its sticks and buttons show in the controller on the right. While you play on it, the keys on the game's prompts are hidden so you can see the game's own buttons.");
+                }
             }
             (true, None) => note(ui, "No controller found. Connect one and it is picked up within a second or two."),
             (false, _) => {}
         }
         ui.add_space(6.0);
-        note(ui, "Not carried over: rumble, the adaptive triggers, the motion sensors and swipes on the touchpad (a click on it is).");
+        let full = &mut self.cfg.controller.full_feedback;
+        let changed = changed | ui.add_enabled(wanted, egui::Checkbox::new(full, "Vibration and adaptive triggers on the controller")).changed();
+        if *full {
+            note(ui, "While you hold the controller, Palmrest unplugs its own virtual controller, so your Remote Play program reads the real one and gives it what the console sends back, touchpad and motion included. Touch a key or the mouse and Palmrest comes back, which takes about a second: the label on the game says ONE MOMENT until the keys are through.");
+            note(ui, "For vibration the controller has to be on a cable and plugged in for a little while already, with its Speakers output enabled in the Windows sound settings. Tried with Veyra.");
+        } else {
+            note(ui, "Off: the controller and the keys work at the same moment and nothing has to come back, but vibration, the adaptive triggers, the motion sensors and swipes on the touchpad are not carried over (a click on the touchpad is).");
+        }
         changed
     }
 
@@ -827,7 +839,9 @@ impl eframe::App for App {
                     self.settings(&mut columns[0], &status);
                     let right = &mut columns[1];
                     self.controller(right, &status.pad);
-                    if let Some(name) = status.controller {
+                    if status.aside.away() {
+                        right.label(RichText::new("Nothing just now: stepped aside for your controller").small().color(LIVE));
+                    } else if let Some(name) = status.controller {
                         right.label(RichText::new(format!("Your controller is connected: {name}")).small().color(LIVE));
                     }
                     if status.mouse_rate > 0.0 {

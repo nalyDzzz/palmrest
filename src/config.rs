@@ -300,11 +300,15 @@ pub struct ControllerConfig {
     /// Read a DualSense or DualShock 4 connected to this computer and add what it does to what
     /// the keys and the mouse do, so it can be picked up for the things a keyboard is bad at.
     pub pass_through: bool,
+    /// Vibration and adaptive triggers on that controller: while it is in the hands, unplug our
+    /// own virtual controller, so the Remote Play program reads the real one itself and can
+    /// give it what the console sends back. Coming back to the keys then takes about a second.
+    pub full_feedback: bool,
 }
 
 impl Default for ControllerConfig {
     fn default() -> Self {
-        ControllerConfig { pass_through: true }
+        ControllerConfig { pass_through: true, full_feedback: false }
     }
 }
 

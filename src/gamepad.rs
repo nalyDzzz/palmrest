@@ -10,8 +10,12 @@
 //! nothing by its own weight while the game is played on the keyboard.
 //!
 //! The controller is read from its own HID reports, which arrive whether or not our window is
-//! in front. Its rumble, adaptive triggers, motion sensors and touchpad surface are not carried
-//! over: the virtual controller only has buttons, sticks and triggers to give.
+//! in front. Its vibration, adaptive triggers, motion sensors and touchpad surface are not
+//! carried over this way: the virtual controller only has buttons, sticks and triggers to give.
+//!
+//! For those there is a second way (`Aside`): while the real controller is in the hands, our
+//! virtual one is unplugged, so the Remote Play program reads the real one itself and gives it
+//! everything the console sends back. Touch a key and the virtual one is plugged in again.
 
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
@@ -196,6 +200,8 @@ pub struct Real {
     /// How it was when it was last touched, to tell the next touch by, and when that was.
     as_touched: Option<PadState>,
     touched: Option<f64>,
+    /// When a button on it last went down (the triggers aside, see `Echo`).
+    pressed: Option<f64>,
     echo: Echo,
 }
 
@@ -206,6 +212,11 @@ const SILENT_AFTER: f64 = 5.0 * SAY_AGAIN_EVERY;
 impl Real {
     /// The reader thread has news: a reading, or `None` when the controller has gone.
     pub fn heard(&mut self, reading: Option<Reading>, now: f64) {
+        let triggers = Button::L2.bit() | Button::R2.bit();
+        let held_before = self.reading.map_or(0, |(before, _)| before.pad.buttons);
+        if reading.is_some_and(|r| r.pad.buttons & !held_before & !triggers != 0) {
+            self.pressed = Some(now);
+        }
         match (reading, self.as_touched) {
             (Some(r), Some(before)) if touched(&before, &r.pad) => (self.as_touched, self.touched) = (Some(r.pad), Some(now)),
             // Just connected: however it lies there is its rest, until it is touched.
@@ -246,6 +257,135 @@ impl Real {
     /// What the controller that is connected is called.
     pub fn name(&self) -> Option<&'static str> {
         self.reading.map(|(reading, _)| reading.name)
+    }
+
+    /// Whether a Remote Play program that follows the last press has had time to follow the
+    /// virtual controller's late copy of the last press on the real one (see `Echo`), so that
+    /// the virtual controller is the one it is reading.
+    pub fn followed(&self, now: f64) -> bool {
+        self.pressed.is_none_or(|pressed| now - pressed >= ECHO_AFTER + FOLLOWED_WITHIN)
+    }
+}
+
+/// How long a program that follows the last press takes to notice one. Veyra looks every 8 ms.
+const FOLLOWED_WITHIN: f64 = 0.06;
+/// The real controller is handed over this long after it was first touched at the earliest, and
+/// this long after at the latest, however busily its buttons are being pressed.
+const HAND_OVER_AFTER: (f64, f64) = (0.08, 1.0);
+/// When the Remote Play program is nudged to follow the virtual controller again, in seconds
+/// after that was plugged back in. Veyra looks for new controllers once a second and cannot
+/// follow one it has not found yet, and nothing tells us when it has: hence several.
+const NUDGE_AT: [f64; 5] = [0.3, 0.6, 0.9, 1.2, 1.8];
+
+/// Stepping aside for the real controller: where our virtual one is, when the setting for
+/// vibration and adaptive triggers is on.
+///
+/// The console sends vibration and trigger effects back over Remote Play, and the Remote Play
+/// program gives them to the controller it is reading. While that is our virtual one they are
+/// lost: it is a DualShock 4, which has no adaptive triggers, and Veyra passes vibration (it
+/// arrives as sound, for the controller's own sound output) only to a DualSense that is the
+/// one controller on the computer. So while the real controller is in the hands, the virtual
+/// one is unplugged. The program falls back on the real one and reads it directly, with all it
+/// has. When a key is pressed or the mouse moved, the virtual one is plugged in again.
+///
+/// Coming back takes a moment and a trick. A program that follows whichever controller
+/// pressed a button last will find the virtual one again (Veyra within a second) but goes on
+/// reading the real one until the virtual one presses a button, and moving with WASD or
+/// looking with the mouse presses none. So once it is back, the virtual controller is given a
+/// nudge a few times (`Do::Nudge`): a button pressed and let go faster than anything looks.
+///
+/// Going is done with care too. Veyra decides once, when it starts reading a controller,
+/// whether that one gets vibration, and says no if another is connected at that moment. So the
+/// virtual one must be the one it is reading when it is unplugged: then the real one is read
+/// afresh, alone. That is what the nudge at the moment of picking up and the short wait after
+/// it are for. The nudge makes the program read the virtual controller if it was not; a press
+/// on the real one takes it away again, and the virtual one's late copy of that press
+/// (`Echo`) brings it back; and only then is the virtual one unplugged.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Aside {
+    /// Plugged in and carrying the keys. `Handing` while the real controller has just been
+    /// picked up: it is added to the virtual one for the moment (since when).
+    #[default]
+    Here,
+    Handing(f64),
+    /// Unplugged: the Remote Play program reads the real controller itself.
+    Away,
+    /// Being plugged in again.
+    Plugging,
+    /// Plugged in again since `since`, and nudged `nudges` times so far.
+    Back { since: f64, nudges: usize },
+}
+
+/// What the engine has to do about the virtual controller now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Do {
+    Nothing,
+    Unplug,
+    Plug,
+    Nudge,
+}
+
+impl Aside {
+    /// Looks at how things stand at `now` and says what to do. `wanted`: the setting is on and
+    /// a real controller is connected. `in_hands`: it is the one in the hands. `followed`: see
+    /// `Real::followed`.
+    pub fn step(&mut self, wanted: bool, in_hands: bool, followed: bool, now: f64) -> Do {
+        let theirs = wanted && in_hands;
+        match *self {
+            // (Picked up again before the keys were quite back counts as picked up.)
+            Aside::Here | Aside::Back { .. } if theirs => {
+                *self = Aside::Handing(now);
+                return Do::Nudge;
+            }
+            Aside::Here => {}
+            Aside::Handing(_) if !theirs => *self = Aside::Here,
+            Aside::Handing(since) => {
+                let waited = now - since;
+                if (waited >= HAND_OVER_AFTER.0 && followed) || waited >= HAND_OVER_AFTER.1 {
+                    *self = Aside::Away;
+                    return Do::Unplug;
+                }
+            }
+            Aside::Away if !theirs => {
+                *self = Aside::Plugging;
+                return Do::Plug;
+            }
+            Aside::Away | Aside::Plugging => {}
+            Aside::Back { since, nudges } => match NUDGE_AT.get(nudges) {
+                Some(at) if now - since >= *at => {
+                    *self = Aside::Back { since, nudges: nudges + 1 };
+                    return Do::Nudge;
+                }
+                Some(_) => {}
+                None => *self = Aside::Here,
+            },
+        }
+        Do::Nothing
+    }
+
+    /// The engine's answer to `Do::Plug`: the virtual controller is plugged in again, or could
+    /// not be.
+    pub fn plugged(&mut self, ok: bool, now: f64) {
+        if *self == Aside::Plugging {
+            *self = if ok { Aside::Back { since: now, nudges: 0 } } else { Aside::Here };
+        }
+    }
+
+    /// Whether something is due shortly, so that the engine must keep looking.
+    pub fn waiting(&self) -> bool {
+        matches!(self, Aside::Handing(_) | Aside::Back { .. })
+    }
+
+    /// The virtual controller is unplugged on purpose (or on its way back in).
+    pub fn away(&self) -> bool {
+        matches!(self, Aside::Away | Aside::Plugging)
+    }
+
+    /// The keys are on their way back and very likely not through to the game yet: the virtual
+    /// controller is being plugged in, or has been for less time than the Remote Play program
+    /// can take to find it (the later nudges are for a program that was slow about it).
+    pub fn coming_back(&self) -> bool {
+        matches!(self, Aside::Plugging | Aside::Back { nudges: 0..=3, .. })
     }
 }
 
@@ -580,7 +720,7 @@ mod tests {
         let held = Some(Reading { name: "DualShock 4, by Bluetooth", pad: PadState { ly: 1.0, r2: 1.0, buttons: Button::R2.bit(), ..PadState::default() } });
         let none = PadState::default();
         let mut real = Real::default();
-        let mut pick_up = |real: &mut Real, at: f64| {
+        let pick_up = |real: &mut Real, at: f64| {
             real.heard(Some(Reading { pad: none, ..held.unwrap() }), at);
             real.heard(held, at + 0.1);
             assert_eq!(real.added_to(none, true, 0.0, at + 0.1).ly, 1.0);
@@ -604,6 +744,107 @@ mod tests {
         pick_up(&mut real, 7.0);
         assert_eq!(real.added_to(none, false, 0.0, 7.2), none);
         assert_eq!(real.name(), None);
+    }
+
+    #[test]
+    fn stepping_aside_for_the_real_controller_and_coming_back() {
+        let mut aside = Aside::default();
+        // The setting is off, or no controller is in the hands: nothing ever happens.
+        assert_eq!(aside.step(false, true, true, 0.0), Do::Nothing);
+        assert_eq!(aside.step(true, false, true, 0.1), Do::Nothing);
+        assert_eq!((aside, aside.away(), aside.waiting()), (Aside::Here, false, false));
+        // Picked up by a stick: a nudge, so that the virtual controller is the one being read,
+        // and a short wait, in which the real one is carried by the virtual one.
+        assert_eq!(aside.step(true, true, true, 1.00), Do::Nudge);
+        assert!(aside.waiting() && !aside.away());
+        assert_eq!(aside.step(true, true, true, 1.05), Do::Nothing);
+        assert_eq!(aside.step(true, true, true, 1.08), Do::Unplug);
+        assert!(aside.away() && !aside.waiting() && !aside.coming_back());
+        assert_eq!(aside.step(true, true, true, 60.0), Do::Nothing, "for as long as it is in the hands");
+        // A key is pressed: plugged in again, which takes a while.
+        assert_eq!(aside.step(true, false, true, 61.0), Do::Plug);
+        assert_eq!(aside.step(true, false, true, 61.1), Do::Nothing);
+        assert!(aside.away() && aside.coming_back());
+        aside.plugged(true, 61.3);
+        assert!(!aside.away() && aside.coming_back() && aside.waiting());
+        // Nudged a few times over the next two seconds, then all is as it was.
+        let mut nudged = Vec::new();
+        for ms in 0..2500 {
+            let now = 61.3 + ms as f64 / 1000.0;
+            if aside.step(true, false, true, now) == Do::Nudge {
+                nudged.push(ms / 10 * 10); // to the hundredth: the times do not add up to the last digit
+            }
+        }
+        assert_eq!(nudged, [300, 600, 900, 1200, 1800]);
+        assert_eq!((aside, aside.coming_back()), (Aside::Here, false));
+        // The label on the game says to wait until the nudge at 1.2 s has gone out.
+        let mut aside = Aside::Back { since: 10.0, nudges: 0 };
+        let mut said_until = 0;
+        for ms in 0..2500 {
+            aside.step(true, false, true, 10.0 + ms as f64 / 1000.0);
+            if aside.coming_back() {
+                said_until = ms / 10 * 10;
+            }
+        }
+        assert!((1190..=1200).contains(&said_until), "{said_until}");
+    }
+
+    #[test]
+    fn the_real_controller_is_handed_over_once_its_presses_have_been_followed() {
+        // Picked up by a button: the hand-over waits until the virtual controller's late copy
+        // of the press has been followed, however long ago the touch was...
+        let mut aside = Aside::default();
+        assert_eq!(aside.step(true, true, false, 1.0), Do::Nudge);
+        assert_eq!(aside.step(true, true, false, 1.3), Do::Nothing, "still pressing away");
+        assert_eq!(aside.step(true, true, true, 1.31), Do::Unplug);
+        // ...but not for ever.
+        let mut aside = Aside::default();
+        aside.step(true, true, false, 1.0);
+        assert_eq!(aside.step(true, true, false, 1.99), Do::Nothing);
+        assert_eq!(aside.step(true, true, false, 2.0), Do::Unplug);
+        // Put down again within the wait: nothing was unplugged.
+        let mut aside = Aside::default();
+        aside.step(true, true, true, 1.0);
+        assert_eq!(aside.step(true, false, true, 1.05), Do::Nothing);
+        assert_eq!(aside, Aside::Here);
+        // When a real press has been followed: its late copy is out, and a little more.
+        let pad = |buttons: u32| Some(Reading { name: "DualSense, by cable", pad: PadState { buttons, ..PadState::default() } });
+        let mut real = Real::default();
+        real.heard(pad(0), 1.0);
+        assert!(real.followed(1.0), "nothing pressed yet");
+        real.heard(pad(Button::R2.bit()), 1.5);
+        assert!(real.followed(1.5), "a trigger is not a press to follow");
+        real.heard(pad(Button::R2.bit() | Button::Cross.bit()), 2.0);
+        assert!(!real.followed(2.0) && !real.followed(2.0 + ECHO_AFTER));
+        assert!(real.followed(2.0 + ECHO_AFTER + FOLLOWED_WITHIN));
+        real.heard(pad(Button::R2.bit() | Button::Cross.bit()), 2.1);
+        assert!(real.followed(2.1), "held on is no new press");
+    }
+
+    #[test]
+    fn stepping_aside_ends_when_the_controller_goes_or_the_setting_is_turned_off() {
+        let away = || {
+            let mut aside = Aside::default();
+            aside.step(true, true, true, 1.0);
+            assert_eq!(aside.step(true, true, true, 1.1), Do::Unplug);
+            aside
+        };
+        // Unplugged or silent, or the setting turned off: `wanted` goes, and the keys need their controller.
+        assert_eq!(away().step(false, true, true, 2.0), Do::Plug);
+        assert_eq!(away().step(false, false, true, 2.0), Do::Plug);
+        // The virtual controller cannot be plugged in again: back to the start, so it can be tried again.
+        let mut aside = away();
+        aside.step(true, false, true, 2.0);
+        aside.plugged(false, 2.2);
+        assert_eq!((aside, aside.away()), (Aside::Here, false));
+        // Picked up again while the keys were on their way back: handed over again.
+        let mut aside = away();
+        aside.step(true, false, true, 2.0);
+        assert_eq!(aside.step(true, true, true, 2.1), Do::Nothing, "the plugging in has to finish first");
+        aside.plugged(true, 2.3);
+        assert_eq!(aside.step(true, true, true, 2.35), Do::Nudge);
+        assert_eq!(aside.step(true, true, true, 2.40), Do::Nothing);
+        assert_eq!(aside.step(true, true, true, 2.45), Do::Unplug);
     }
 
     #[test]

@@ -45,7 +45,7 @@ fn main() {
     // seconds, switching between the two layouts, with nothing else running.
     if let Some(i) = std::env::args().position(|a| a == "--overlay-test") {
         let hwnd = std::env::args().nth(i + 1).and_then(|v| v.parse::<isize>().ok()).unwrap_or(0);
-        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(overlay::OverlayState { show: true, game_window: hwnd, mode: config::Mode::Foot, wait: false, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }));
         if let Err(e) = overlay::start(state.clone()) {
             return println!("FAILED {e}");
         }

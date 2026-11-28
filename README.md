@@ -141,9 +141,20 @@ Some things in the game are made for two thumbs, flying most of all. Connect a D
 
 The window says which controller it found, under *Controller*, and its sticks and buttons show in the drawing of what Palmrest sends. The controller has to be connected to the PC, not to the PS5.
 
-Not carried over: rumble, the adaptive triggers, the motion sensors and swipes on the touchpad. A click on the touchpad is.
+Not carried over this way: vibration, the adaptive triggers, the motion sensors and swipes on the touchpad. A click on the touchpad is.
 
-This part is new. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
+### Vibration and adaptive triggers
+
+The console does send vibration and trigger effects back over Remote Play, and the Remote Play program gives them to the controller it is reading. Normally that is Palmrest's virtual controller, where they are lost. Tick **Vibration and adaptive triggers on the controller** under *Controller* and Palmrest steps aside instead:
+
+- While you hold the controller, Palmrest unplugs its own virtual controller. Your Remote Play program then reads the real one directly and gives it everything, touchpad and motion included.
+- Press a key or move the mouse and Palmrest plugs its controller back in. That takes about a second; the label on the game says ONE MOMENT until the keys are through.
+
+For vibration, Veyra wants the DualSense on a cable, plugged in for a little while already, and its *Speakers* output enabled in the Windows sound settings (the game's vibration arrives as sound for the controller). It does not have to be the default output.
+
+This is tried with Veyra only, and it leans on how Veyra picks the controller it reads.
+
+All of this is new. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
 
 ## Settings and pictures
 

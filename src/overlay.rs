@@ -41,6 +41,9 @@ pub struct OverlayState {
     /// The game window to sit on top of.
     pub game_window: isize,
     pub mode: Mode,
+    /// The keys are not through to the game yet (see `gamepad::Aside`): the label says to wait
+    /// a moment where it otherwise names the layout.
+    pub wait: bool,
     /// Triggers whose keys pull them only part of the way right now, each with how far ("40%").
     pub pull: Vec<(Glyph, String)>,
     /// The button prompts on screen, each with the key to press for it.
@@ -68,7 +71,7 @@ static SPOT_WINDOWS: Mutex<Vec<(isize, Option<(Spot, (i32, i32))>)>> = Mutex::ne
 
 impl Default for OverlayState {
     fn default() -> Self {
-        OverlayState { show: false, game_window: 0, mode: Mode::Foot, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }
+        OverlayState { show: false, game_window: 0, mode: Mode::Foot, wait: false, pull: Vec::new(), prompts: Vec::new(), spots: Vec::new() }
     }
 }
 
@@ -85,6 +88,7 @@ const SMOOTH: i32 = 3;
 const BACKING: (u8, u8, u8) = (0x12, 0x14, 0x1C);
 const ON_FOOT: (u8, u8, u8) = (0xE8, 0xEA, 0xF2);
 const DRIVING: (u8, u8, u8) = (0xFF, 0xB3, 0x47);
+const WAITING: (u8, u8, u8) = (0x8A, 0x90, 0xA6);
 
 /// The colour of each button's mark: the ones printed on PlayStation pads.
 fn tint(glyph: Glyph) -> (u8, u8, u8) {
@@ -149,6 +153,7 @@ static SHOWN: Mutex<Option<Shown>> = Mutex::new(None);
 #[derive(Clone, PartialEq)]
 struct Shown {
     mode: Mode,
+    wait: bool,
     pull: Vec<(Glyph, String)>,
     prompts: Vec<(Glyph, String)>,
     /// Height of the game picture the label was drawn for.
@@ -181,8 +186,8 @@ unsafe fn refresh(hwnd: HWND) {
     };
     let picture_h = picture.bottom - picture.top;
     let scale = (picture_h as f32 / 1080.0).clamp(0.5, 3.0);
-    let redraw = shown.as_ref().is_none_or(|s| s.mode != state.mode || s.picture_h != picture_h || s.pull != state.pull || s.prompts != state.prompts);
-    let label = if redraw { unsafe { draw_label(state.mode, &state.pull, &state.prompts, scale) } } else { None };
+    let redraw = shown.as_ref().is_none_or(|s| s.mode != state.mode || s.wait != state.wait || s.picture_h != picture_h || s.pull != state.pull || s.prompts != state.prompts);
+    let label = if redraw { unsafe { draw_label(state.mode, state.wait, &state.pull, &state.prompts, scale) } } else { None };
     // Bottom left of the game picture, just right of the minimap. The bottom right is where the
     // game lists its own prompts, and the bottom middle is for subtitles.
     let margin = (26.0 * scale) as i32;
@@ -199,7 +204,7 @@ unsafe fn refresh(hwnd: HWND) {
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let _ = UpdateLayeredWindow(hwnd, None, Some(&at), Some(&extent), Some(label.dc), Some(&POINT::default()), COLORREF(0), Some(&blend), ULW_ALPHA);
             let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            *shown = Some(Shown { mode: state.mode, pull: state.pull.clone(), prompts: state.prompts.clone(), picture_h, at: (at.x, at.y) });
+            *shown = Some(Shown { mode: state.mode, wait: state.wait, pull: state.pull.clone(), prompts: state.prompts.clone(), picture_h, at: (at.x, at.y) });
         } else if let Some(s) = shown.as_mut() {
             // Same label: follow the game window if it moved.
             let mut own = RECT::default();
@@ -666,14 +671,16 @@ fn lay(out: &Surface, stencil: &Surface, color: (u8, u8, u8), strength: f32) {
     }
 }
 
-/// Draws the label: a dark rounded backing, a dot and the layout's name, then any trigger that
+/// Draws the label: a dark rounded backing, a dot and the layout's name (or, with `wait`, a
+/// word to say that the keys will work in a moment), then any trigger that
 /// is set to a part pull with how far, in the trigger's colour, then for every prompt on screen
 /// the button's mark and the key to press for it.
-unsafe fn draw_label(mode: Mode, pull: &[(Glyph, String)], prompts: &[(Glyph, String)], scale: f32) -> Option<Surface> {
+unsafe fn draw_label(mode: Mode, wait: bool, pull: &[(Glyph, String)], prompts: &[(Glyph, String)], scale: f32) -> Option<Surface> {
     unsafe {
         // Everything after the name is a mark with words beside it; `true` for the pulls.
         let prompts: Vec<(Glyph, &str, bool)> = pull.iter().map(|(g, t)| (*g, t.as_str(), true)).chain(prompts.iter().map(|(g, k)| (*g, k.as_str(), false))).collect();
         let (name, color) = match mode {
+            _ if wait => ("ONE MOMENT", WAITING),
             Mode::Foot => ("ON FOOT", ON_FOOT),
             Mode::Drive => ("DRIVING", DRIVING),
         };

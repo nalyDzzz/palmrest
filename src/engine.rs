@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::aim::{Aim, AimParams};
 use crate::config::{Action, Config, Layout, Mode};
-use crate::gamepad::{self, Reading, Real};
+use crate::gamepad::{self, Aside, Do, Reading, Real};
 use crate::keys::Input;
 use crate::mapper::Mapper;
 use crate::output::{Output, Sent, VirtualDs4};
@@ -71,7 +71,18 @@ pub enum Msg {
     Look(Option<Look>),
     /// What a real controller connected to the computer is doing (`None`: it has gone).
     Controller(Option<Reading>),
+    /// The virtual controller was plugged in again after stepping aside, or could not be.
+    Plugged(Result<Plugged, String>),
     Quit,
+}
+
+/// A virtual controller that has just been plugged in.
+pub struct Plugged(Box<dyn Output>);
+
+impl std::fmt::Debug for Plugged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Plugged")
+    }
 }
 
 /// What one look at the game picture found.
@@ -112,8 +123,10 @@ pub struct Status {
     /// at the moment), and how long one search takes, in milliseconds.
     pub checks_per_second: f32,
     pub check_ms: f32,
-    /// The real controller whose input is being added, if one is connected and wanted.
+    /// The real controller that is connected, if one is and it is wanted.
     pub controller: Option<&'static str>,
+    /// Where the virtual controller is, under the setting for vibration and adaptive triggers.
+    pub aside: Aside,
 }
 
 impl Status {
@@ -149,6 +162,7 @@ impl Engine {
             checks_per_second: 0.0,
             check_ms: 0.0,
             controller: None,
+            aside: Aside::Here,
         }));
         win::start_input(tx.clone())?;
         let dry = win::DRY.load(std::sync::atomic::Ordering::Relaxed);
@@ -287,6 +301,7 @@ fn run(
     mapper.set_hold_get_in(cfg.switch_on_name_card);
     // A real controller connected to the computer, and when the keys or the mouse were last used.
     let mut real = Real::default();
+    let mut aside = Aside::default();
     let mut keys_used = 0.0f64;
     // Mouse movement lately: since when it is being added up, and how many counts so far.
     let mut mouse_moved = (0.0f64, 0i32);
@@ -294,7 +309,7 @@ fn run(
     'run: loop {
         // Full speed while playing, testing, while the last state still has to be delivered, or
         // while a press on the real controller waits to be passed on.
-        let busy = live || test.is_some() || last_sent.is_none() || real.waiting(win::now());
+        let busy = live || test.is_some() || last_sent.is_none() || real.waiting(win::now()) || aside.waiting();
         let tick = if busy { TICK } else { IDLE_TICK };
         let wait = (last_step + tick - win::now()).max(0.0);
         let mut next = match rx.recv_timeout(Duration::from_secs_f64(wait)) {
@@ -353,11 +368,17 @@ fn run(
                     if cfg.sounds {
                         win::beep(if armed { 880 } else { 440 }, 60);
                     }
+                    if armed {
+                        keys_used = win::now(); // turned on to use the keys
+                    }
                     next_foreground = 0.0;
                     urgent = true;
                 }
                 Msg::Arm(on) => {
                     armed = on;
+                    if armed {
+                        keys_used = win::now();
+                    }
                     next_foreground = 0.0;
                     urgent = true;
                 }
@@ -434,6 +455,11 @@ fn run(
                     real.heard(reading, win::now());
                     urgent = true; // a stick moved or a button changed: out at once, like a key
                 }
+                Msg::Plugged(plugged) => {
+                    aside.plugged(plugged.is_ok(), win::now());
+                    output = plugged.map(|Plugged(out)| out);
+                    last_sent = None;
+                }
                 Msg::Quit => break 'run,
             }
             next = rx.try_recv().ok();
@@ -506,6 +532,28 @@ fn run(
         // And while it is, nothing is drawn on the game: a key on a prompt would hide the
         // button to press.
         let in_hands = real.in_hands(keys_used);
+        // With the setting for vibration and adaptive triggers on, the virtual controller steps
+        // aside while the real one is in the hands (`Aside` says why and how). Plugging in and
+        // unplugging can take a moment, so they are done on threads of their own.
+        let step_aside = cfg.controller.full_feedback && real.name().is_some();
+        let mut nudge = false;
+        if output.is_ok() || aside != Aside::Here {
+            match aside.step(step_aside, in_hands, real.followed(now), now) {
+                Do::Unplug => {
+                    if let Ok(out) = std::mem::replace(&mut output, Err(String::new())) {
+                        std::thread::spawn(move || drop(out));
+                    }
+                }
+                Do::Plug => {
+                    let back = tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = back.send(Msg::Plugged(connect().map(Plugged)));
+                    });
+                }
+                Do::Nudge => nudge = true,
+                Do::Nothing => {}
+            }
+        }
 
         let resend = last_sent.is_none_or(|(sent, at)| sent != pad || now - at >= RESEND_EVERY);
         if resend {
@@ -523,6 +571,10 @@ fn run(
             }
         } else {
             waiting_since = None; // the event changed nothing that is sent
+        }
+        if let (true, Ok(out)) = (nudge, &mut output) {
+            nudge_follower(out.as_mut(), &pad);
+            last_sent = None; // whatever became of it, the state goes out again on the next pass
         }
 
         if now >= next_status {
@@ -555,7 +607,7 @@ fn run(
                 let shown = listed.filter_map(|g| keys_shown(&cfg, mode, g).map(|keys| (g, keys))).collect();
                 // A trigger set to a part pull is always worth showing: it changes what its key does.
                 let pull = [Glyph::L2, Glyph::R2].into_iter().zip(mapper.pull()).filter(|(_, far)| *far < 0.995).map(|(g, far)| (g, format!("{:.0}%", far * 100.0))).collect();
-                let next = OverlayState { show: live && cfg.overlay.enabled && !in_hands, game_window, mode, pull, prompts: shown, spots };
+                let next = OverlayState { show: live && cfg.overlay.enabled && !in_hands, game_window, mode, wait: aside.coming_back(), pull, prompts: shown, spots };
                 if *o != next {
                     *o = next;
                 }
@@ -566,7 +618,9 @@ fn run(
                 s.live = live;
                 s.mode = mapper.mode();
                 s.pad = pad;
-                s.output_error = output.as_ref().err().cloned();
+                // (Unplugged on purpose is not an error.)
+                s.output_error = output.as_ref().err().filter(|_| !aside.away()).cloned();
+                s.aside = aside;
                 s.mouse_rate = mouse_rate;
                 s.testing = test.is_some();
                 s.controller = real.name();
@@ -592,6 +646,32 @@ fn run(
     win::release_cursor();
     if let Ok(out) = &mut output {
         let _ = out.send(&PadState::default());
+    }
+}
+
+/// Makes a Remote Play program that follows whichever controller pressed a button last follow
+/// this one, without the game noticing a press: R3 goes down and comes up again in two reports
+/// sent back to back. Such a program takes in everything a controller has said since it last
+/// looked, sees that a button went down, and follows; and when it then asks what is held, the
+/// answer is nothing. Only if it happens to look between the two reports, which are a fraction
+/// of a millisecond apart while it looks every few milliseconds, does it see R3 held, for that
+/// one look. R3 is the button to risk that with: it looks behind for as long as it is held.
+fn nudge_follower(out: &mut dyn Output, pad: &PadState) {
+    if pad.pressed(Button::R3) {
+        return; // held by a key already: no press to make
+    }
+    let mut pressed = *pad;
+    pressed.press(Button::R3);
+    // The driver takes a report only when the reader is ready for one, which after a report
+    // takes a moment: ask until it does, without sleeping, and give up after a few milliseconds.
+    let give_up = win::now() + 0.004;
+    for state in [&pressed, pad] {
+        while !matches!(out.send(state), Ok(Sent::Taken)) {
+            if win::now() > give_up {
+                return;
+            }
+            std::hint::spin_loop();
+        }
     }
 }
 
