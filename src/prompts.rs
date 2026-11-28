@@ -60,32 +60,44 @@ enum Outline {
 }
 
 /// Is the vehicle name card on screen? GTA 6 shows it just above the minimap for a few seconds
-/// when you get into a vehicle: a dark see-through panel with the maker's name and, under it in
-/// white, the model's name, centred.
+/// when you get into a vehicle: a dark see-through panel with the maker's name in grey and,
+/// under it in white capitals, the model's name, centred.
 ///
 /// The panel is see-through, so its brightness depends on what is behind it. What does not
-/// change is the white model name: a band of bright text in a fixed row, centred on the panel,
-/// with clean margins left and right and an even tone behind it. Built from two examples, and
-/// checked against 31 pictures without the card.
+/// change is the model's name, and everything about it is checked, because the layout is
+/// switched on this and a switch at the wrong moment costs more than a missed one:
+///
+/// - it is white, on a panel that stays dark whatever is behind it;
+/// - it stands in a fixed band of rows, with some of it in every row of the band's middle,
+///   nothing in the rows just above the band and nothing in the rows below it;
+/// - it is made of letters: several short runs with gaps between them, not one long streak;
+/// - it is centred, with clean margins left and right and an even tone behind it.
+///
+/// Built from two examples and checked against the other saved pictures. An earlier version
+/// asked for the last point only, and in a safe-cracking scene it took the lit edge of a flight
+/// case for a name, again and again as the camera swayed.
 pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
     if w < 320 || h < 180 || rgb.len() < w * h * 3 {
         return false;
     }
     let (sx, sy) = (w as f32 / 1920.0, h as f32 / 1080.0);
-    let at = |x: f32, y: f32| ((x * sx).round() as usize, (y * sy).round() as usize);
+    let (col, row) = (|x: f32| (x * sx).round() as usize, |y: f32| (y * sy).round() as usize);
     // The name area of the card, in a 1920 x 1080 picture.
-    let (x0, y0) = at(34.0, 762.0);
-    let (x1, y1) = at(332.0, 840.0);
-    let (model_top, model_bottom) = (at(0.0, 802.0).1 - y0, at(0.0, 828.0).1 - y0);
+    let (x0, x1, y0, y1) = (col(34.0), col(332.0), row(762.0), row(840.0));
     let (aw, ah) = (x1 - x0, y1 - y0);
     if aw < 40 || ah < 12 || x1 >= w || y1 >= h {
         return false;
     }
+    // Rows of the area: the band the model's name stands in (both examples fill 805 to 823),
+    // the middle of it, and the empty rows above (below the maker's name) and below.
+    let rows = |from: f32, to: f32| row(from) - y0..row(to) - y0;
+    let (band, middle) = (rows(805.0, 824.0), rows(807.0, 822.0));
+    let (above, below) = (rows(798.0, 804.0), rows(825.0, 834.0));
     let lum = |x: usize, y: usize| {
         let p = &rgb[((y0 + y) * w + x0 + x) * 3..];
         ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8
     };
-    // The panel's own tone: the middle brightness of the area.
+    // The panel's own tone: the middle brightness of the area. In front of sunlit concrete it is 49.
     let mut histogram = [0u32; 256];
     for y in 0..ah {
         for x in 0..aw {
@@ -98,17 +110,32 @@ pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
         seen * 2 >= (aw * ah) as u32
     });
     let base = base.unwrap_or(0) as i32;
+    if base > 90 {
+        return false;
+    }
     let text = |x: usize, y: usize| lum(x, y) as i32 > base + 60;
+    let text_in = |rows: std::ops::Range<usize>| rows.flat_map(|y| (0..aw).map(move |x| (x, y))).filter(|&(x, y)| text(x, y)).count();
 
-    // Text in the model-name rows: how much, where, and how wide.
-    let (mut in_rows, mut first, mut last) = (0u32, usize::MAX, 0usize);
-    let mut column_sum = 0u64;
-    let mut columns = 0u32;
+    // Nothing above the name and nothing below it (but for a stray pixel or two).
+    let stray = aw / 100;
+    if text_in(above) > stray || text_in(below) > stray {
+        return false;
+    }
+    // Capitals: every row of the band's middle has some of the name in it.
+    if !middle.clone().all(|y| (0..aw).any(|x| text(x, y))) {
+        return false;
+    }
+    // The name in its band: how much of it there is and how much of that is white, the columns
+    // it takes up, and the runs of columns side by side (its letters).
+    let (mut in_band, mut white) = (0u32, 0u32);
+    let (mut first, mut last, mut column_sum, mut columns) = (usize::MAX, 0usize, 0u64, 0u32);
+    let (mut runs, mut run, mut widest) = (0u32, 0usize, 0usize);
     for x in 0..aw {
         let mut any = false;
-        for y in model_top..model_bottom {
+        for y in band.clone() {
             if text(x, y) {
-                in_rows += 1;
+                in_band += 1;
+                white += (lum(x, y) >= 200) as u32;
                 any = true;
             }
         }
@@ -117,14 +144,21 @@ pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
             last = x;
             column_sum += x as u64;
             columns += 1;
+            runs += (run == 0) as u32;
+            run += 1;
+            widest = widest.max(run);
+        } else {
+            run = 0;
         }
     }
     if columns == 0 {
         return false;
     }
-    let share = in_rows as f32 / ((model_bottom - model_top) * aw) as f32;
+    let letters = runs >= 3 && widest as f32 <= 32.0 * sx;
+    let width = (last - first + 1) as f32;
+    // How much of its own box the name fills: letters about half, a streak or a block nearly all.
+    let filled = in_band as f32 / (width * band.len() as f32);
     let centre_off = column_sum as f32 / columns as f32 - aw as f32 / 2.0;
-    let width = (last - first) as f32;
     // Margins: the outer strips of the area, over its full height, carry no text.
     let strip = ((16.0 * sx) as usize).max(2);
     let margin_text = (0..ah).flat_map(|y| (0..strip).chain(aw - strip..aw).map(move |x| (x, y))).filter(|&(x, y)| text(x, y)).count();
@@ -143,7 +177,13 @@ pub fn name_card(rgb: &[u8], w: usize, h: usize) -> bool {
     }
     let spread = if n > 0.0 { (squares / n - (sum / n).powi(2)).max(0.0).sqrt() } else { 99.0 };
 
-    (0.06..=0.30).contains(&share) && centre_off.abs() <= 8.0 * sx && margins <= 0.03 && spread <= 18.0 && (40.0 * sx..=260.0 * sx).contains(&width)
+    letters
+        && white * 2 >= in_band
+        && (0.30..=0.80).contains(&filled)
+        && centre_off.abs() <= 8.0 * sx
+        && (40.0 * sx..=260.0 * sx).contains(&width)
+        && margins <= 0.03
+        && spread <= 18.0
 }
 
 /// Turns single looks into a steady list: a prompt is shown once two looks in a row have found
@@ -266,9 +306,17 @@ pub struct Found {
 const LEVELS: [u8; 4] = [225, 190, 155, 120];
 /// Inside a disc, this much darker than its face counts as part of the mark.
 const MARK_DARKER_BY: i16 = 60;
-/// Disc diameter in a 1080-line picture: smallest and largest accepted.
-const MIN_DIAMETER: f32 = 17.0;
+/// Disc diameter in a 1080-line picture: smallest and largest accepted. Every prompt in the
+/// saved pictures is 25 to 31 across. The white letters of the map's place names are 18, and
+/// an "O" among them is a ring with a dark outline, which is what the circle button looks like.
+const MIN_DIAMETER: f32 = 22.0;
 const MAX_DIAMETER: f32 = 46.0;
+/// A prompt is drawn in white, grey and black: on its face and in its mark the three colours of
+/// a pixel differ by no more than this on average. The map's blips are discs with a letter on
+/// them too, but coloured ones, and a white "o" on a coloured sign has a coloured hole for a
+/// mark. In the saved pictures prompts reach 24 on the face (a see-through one in front of
+/// skin) and 7 in the mark, while blips and signs start at 100.
+const MOST_COLOUR: u32 = 50;
 /// The grid the mark is read on, and how far from the centre it reaches (share of the radius).
 const GRID: usize = 15;
 const GRID_REACH: f32 = 0.72;
@@ -673,14 +721,14 @@ pub fn find_with(rgb: &[u8], w: usize, h: usize, on_thread: impl Fn() + Sync) ->
         return found;
     }
     let lum: Vec<u8> = rgb.chunks_exact(3).take(w * h).map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16) / 3) as u8).collect();
-    let (lum, on_thread) = (&lum, &on_thread);
+    let (lum, on_thread) = (&lum[..], &on_thread);
     let per_level: Vec<Vec<Found>> = std::thread::scope(|scope| {
         let searches: Vec<_> = LEVELS
             .iter()
             .map(|&level| {
                 scope.spawn(move || {
                     on_thread();
-                    prompts_at(lum, w, h, level)
+                    prompts_at(rgb, lum, w, h, level)
                 })
             })
             .collect();
@@ -700,8 +748,13 @@ pub fn find_with(rgb: &[u8], w: usize, h: usize, on_thread: impl Fn() + Sync) ->
 }
 
 /// The prompts whose face stands alone when the picture is cut at `level`.
-fn prompts_at(lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Found> {
+fn prompts_at(rgb: &[u8], lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Found> {
     let mut found = Vec::new();
+    // How coloured a pixel is: the difference between its strongest and its weakest colour.
+    let colour = |i: usize| {
+        let p = &rgb[i * 3..i * 3 + 3];
+        (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) as u32
+    };
     // Which connected area each pixel belongs to (0: none yet), and the pixels still to walk.
     let mut area = vec![0u32; w * h];
     let mut stack: Vec<u32> = Vec::new();
@@ -837,14 +890,28 @@ fn prompts_at(lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Found> {
             }
             (bw as f32 / 2.0, bh as f32 / 2.0, bw.max(bh) as f32)
         };
+        // The face has no colour of its own.
+        let face_colour: u32 = (y0..=y1).flat_map(|y| (x0..=x1).map(move |x| y * w + x)).filter(|&i| area[i] == id).map(colour).sum();
+        if face_colour > MOST_COLOUR * count {
+            continue;
+        }
         let mut grid: Grid = [[false; GRID]; GRID];
         let half = (GRID - 1) as f32 / 2.0;
+        let (mut mark_colour, mut mark_cells) = (0u32, 0u32);
         for (gy, row) in grid.iter_mut().enumerate() {
             for (gx, cell) in row.iter_mut().enumerate() {
                 let x = (cx + (gx as f32 - half) / half * GRID_REACH * rx).round() as usize;
                 let y = (cy + (gy as f32 - half) / half * GRID_REACH * ry).round() as usize;
                 *cell = (lum[y * w + x] as i16) < face - MARK_DARKER_BY;
+                if *cell {
+                    mark_colour += colour(y * w + x);
+                    mark_cells += 1;
+                }
             }
+        }
+        // Nor has the mark.
+        if mark_colour > MOST_COLOUR * mark_cells {
+            continue;
         }
         if let Some((glyph, score)) = classify(&grid, outline) {
             found.push(Found { glyph, x: cx, y: cy, diameter, score });
@@ -940,6 +1007,14 @@ mod tests {
     /// A picture of grey-brown blocks, with prompts drawn at (cx, cy): a disc of `diameter`, or
     /// a badge that high (a shoulder badge is wider than that, as in the game).
     fn picture(w: usize, h: usize, discs: &[(Glyph, usize, usize, usize)]) -> Vec<u8> {
+        let mut rgb = scenery(w, h);
+        for &(glyph, cx, cy, diameter) in discs {
+            draw_prompt(&mut rgb, w, glyph, cx, cy, diameter, [250; 3], [25; 3]);
+        }
+        rgb
+    }
+
+    fn scenery(w: usize, h: usize) -> Vec<u8> {
         let mut rgb = vec![0u8; w * h * 3];
         let mut state = 12345u32;
         for by in 0..h.div_ceil(24) {
@@ -953,34 +1028,71 @@ mod tests {
                 }
             }
         }
-        for &(glyph, cx, cy, diameter) in discs {
-            let (_, outline, rows) = PATTERNS.iter().find(|(g, _, _)| *g == glyph).unwrap();
-            let mark = pattern(rows);
-            let ry = diameter as f32 / 2.0;
-            let rx = if *outline == Outline::Shoulder { ry * 28.0 / 22.0 } else { ry };
-            for y in cy - diameter..=cy + diameter {
-                for x in cx - diameter..=cx + diameter {
-                    let (dx, dy) = (x as f32 - cx as f32, y as f32 - cy as f32);
-                    // A badge is a box with two corners rounded off: the lower two or the upper two.
-                    let bend = 0.7 * ry;
-                    let (in_x, in_y) = (dx.abs() - (rx - bend), if *outline == Outline::Shoulder { dy } else { -dy } - (ry - bend));
-                    let inside = match outline {
-                        Outline::Disc => dx.hypot(dy) <= ry,
-                        _ => dx.abs() <= rx && dy.abs() <= ry && !(in_x > 0.0 && in_y > 0.0 && in_x.hypot(in_y) > bend),
-                    };
-                    if !inside {
-                        continue;
-                    }
-                    // Which grid cell this pixel falls in, the same way `find` reads it.
-                    let half = (GRID - 1) as f32 / 2.0;
-                    let (gx, gy) = ((dx / (GRID_REACH * rx) * half + half).round(), (dy / (GRID_REACH * ry) * half + half).round());
-                    let dark = (0.0..GRID as f32).contains(&gx) && (0.0..GRID as f32).contains(&gy) && mark[gy as usize][gx as usize];
-                    let v = if dark { 25 } else { 250 };
-                    rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[v, v, v]);
+        rgb
+    }
+
+    /// Draws one prompt: its face in one colour and its mark in another.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_prompt(rgb: &mut [u8], w: usize, glyph: Glyph, cx: usize, cy: usize, diameter: usize, face: [u8; 3], ink: [u8; 3]) {
+        let (_, outline, rows) = PATTERNS.iter().find(|(g, _, _)| *g == glyph).unwrap();
+        let mark = pattern(rows);
+        let ry = diameter as f32 / 2.0;
+        let rx = if *outline == Outline::Shoulder { ry * 28.0 / 22.0 } else { ry };
+        for y in cy - diameter..=cy + diameter {
+            for x in cx - diameter..=cx + diameter {
+                let (dx, dy) = (x as f32 - cx as f32, y as f32 - cy as f32);
+                // A badge is a box with two corners rounded off: the lower two or the upper two.
+                let bend = 0.7 * ry;
+                let (in_x, in_y) = (dx.abs() - (rx - bend), if *outline == Outline::Shoulder { dy } else { -dy } - (ry - bend));
+                let inside = match outline {
+                    Outline::Disc => dx.hypot(dy) <= ry,
+                    _ => dx.abs() <= rx && dy.abs() <= ry && !(in_x > 0.0 && in_y > 0.0 && in_x.hypot(in_y) > bend),
+                };
+                if !inside {
+                    continue;
                 }
+                // Which grid cell this pixel falls in, the same way `find` reads it.
+                let half = (GRID - 1) as f32 / 2.0;
+                let (gx, gy) = ((dx / (GRID_REACH * rx) * half + half).round(), (dy / (GRID_REACH * ry) * half + half).round());
+                let dark = (0.0..GRID as f32).contains(&gx) && (0.0..GRID as f32).contains(&gy) && mark[gy as usize][gx as usize];
+                rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(if dark { &ink } else { &face });
             }
         }
-        rgb
+    }
+
+    #[test]
+    fn a_coloured_disc_with_a_letter_on_it_is_not_a_prompt() {
+        // On a dark picture: the stick prompt as the game draws it, the same in grey (a dimmed
+        // prompt), the map's pink blip with an "R" on it, and a white "o" whose hole is the
+        // blue of the sign it is written on.
+        let (w, h) = (640usize, 360usize);
+        let found = |face: [u8; 3], ink: [u8; 3]| {
+            let mut rgb = vec![30u8; w * h * 3];
+            draw_prompt(&mut rgb, w, Glyph::RightStick, 300, 200, 26, face, ink);
+            find_at_full_size(&rgb, w, h).iter().map(|f| f.glyph).collect::<Vec<_>>()
+        };
+        assert_eq!(found([250; 3], [25; 3]), [Glyph::RightStick]);
+        assert_eq!(found([150; 3], [40; 3]), [Glyph::RightStick], "dimmed is still a prompt");
+        assert_eq!(found([228, 218, 205], [79, 78, 71]), [Glyph::RightStick], "so is one that lets a little of the scene through");
+        assert!(found([215, 101, 139], [35, 26, 26]).is_empty(), "a pink blip");
+        assert!(found([231, 237, 240], [95, 134, 217]).is_empty(), "a letter with a blue hole");
+        // The map's place names are small: an "O" of theirs is too small to be the circle button.
+        let mut rgb = vec![30u8; w * h * 3];
+        draw_prompt(&mut rgb, w, Glyph::Circle, 300, 200, 18, [250; 3], [25; 3]);
+        assert!(find_at_full_size(&rgb, w, h).is_empty(), "a ring 18 across");
+        draw_prompt(&mut rgb, w, Glyph::Circle, 400, 200, 26, [250; 3], [25; 3]);
+        assert_eq!(find_at_full_size(&rgb, w, h).iter().map(|f| f.glyph).collect::<Vec<_>>(), [Glyph::Circle], "a ring 26 across");
+    }
+
+    /// `find` on a picture cut out of a 1080-line one: sizes are judged as they are, not scaled
+    /// to the picture's height.
+    fn find_at_full_size(rgb: &[u8], w: usize, h: usize) -> Vec<Found> {
+        let (full_w, full_h) = (1920usize, 1080usize);
+        let mut full = vec![30u8; full_w * full_h * 3];
+        for y in 0..h {
+            full[y * full_w * 3..(y * full_w + w) * 3].copy_from_slice(&rgb[y * w * 3..(y + 1) * w * 3]);
+        }
+        find(&full, full_w, full_h)
     }
 
     #[test]
@@ -1069,25 +1181,32 @@ mod tests {
 
     #[test]
     fn a_name_card_is_seen_and_plain_scenery_is_not() {
-        // A 1920 x 1080 picture of blocky scenery; optionally a dark panel with a centred white bar
-        // of "text" where the model name goes.
+        // A 1920 x 1080 picture of blocky scenery with a dark panel on it and, on the panel,
+        // "text": bars in the columns `across` and the rows `down`, of brightness `ink`, either
+        // three pixels wide with gaps of three (letters) or all in one piece.
         let (w, h) = (1920usize, 1080usize);
-        let draw = |card: Option<(usize, usize)>| {
+        let draw = |across: std::ops::Range<usize>, down: std::ops::Range<usize>, ink: u8, in_one_piece: bool| {
             let mut rgb = picture(w, h, &[]);
-            if let Some((left, right)) = card {
-                for y in 760..874 {
-                    for x in 32..334 {
-                        let v = if (806..824).contains(&y) && (left..right).contains(&x) && (x / 3) % 2 == 0 { 245 } else { 45 };
-                        rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[v, v, v]);
-                    }
+            for y in 760..874 {
+                for x in 32..334 {
+                    let inked = down.contains(&y) && across.contains(&x) && (in_one_piece || (x / 3) % 2 == 0);
+                    let v = if inked { ink } else { 45 };
+                    rgb[(y * w + x) * 3..(y * w + x) * 3 + 3].copy_from_slice(&[v, v, v]);
                 }
             }
             rgb
         };
-        assert!(name_card(&draw(Some((120, 246))), w, h), "a centred name");
-        assert!(name_card(&draw(Some((90, 276))), w, h), "a longer centred name");
-        assert!(!name_card(&draw(None), w, h), "no card");
-        assert!(!name_card(&draw(Some((40, 150))), w, h), "text pushed to one side is not the card");
+        assert!(name_card(&draw(120..246, 806..824, 245, false), w, h), "a centred name");
+        assert!(name_card(&draw(90..276, 806..824, 245, false), w, h), "a longer centred name");
+        assert!(!name_card(&picture(w, h, &[]), w, h), "no card");
+        assert!(!name_card(&draw(0..0, 0..0, 0, false), w, h), "an empty panel");
+        assert!(!name_card(&draw(40..150, 806..824, 245, false), w, h), "text pushed to one side is not the card");
+        // What the first version of this check fell for: a lit edge running across the area.
+        assert!(!name_card(&draw(120..246, 806..824, 245, true), w, h), "one long streak is not a name");
+        assert!(!name_card(&draw(120..246, 806..824, 150, false), w, h), "the name is white, not grey");
+        assert!(!name_card(&draw(120..246, 800..824, 245, false), w, h), "nothing stands right above the name");
+        assert!(!name_card(&draw(120..246, 806..832, 245, false), w, h), "nothing stands right below the name");
+        assert!(!name_card(&draw(120..246, 812..818, 245, false), w, h), "the name fills its band from top to bottom");
         assert!(!name_card(&[0u8; 30], 4, 2));
     }
 
@@ -1104,7 +1223,7 @@ mod tests {
         // has a cross button on it that reads as a prompt, and the two "Restore" prompts are dimmed.
         const EVERY_BUTTON: &[Glyph] = &[L1, L1, R1, R1, L2, R2, Triangle, Square, Circle, Circle, Cross, L3, R3, R3, LeftStick, RightStick];
         const PHOTO_MODE: &[Glyph] = &[LeftStick, RightStick, Triangle, Cross, Circle, L1, R1, L2, R2, L3];
-        let expected: [(&str, &[Glyph], &[Glyph]); 27] = [
+        let expected: [(&str, &[Glyph], &[Glyph]); 34] = [
             ("1795460287_on_foot", &[Triangle], &[Square]),
             ("1795460357_on_foot", &[Circle, Cross, Square], &[]),
             ("1123_100027_should_be_drive", &[Cross], &[]),
@@ -1132,6 +1251,16 @@ mod tests {
             ("1795467833_on_foot", &[R1, Square, Triangle], &[]), // weapon wheel: its square and triangle are the bold ones
             ("1795467907_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]), // with a weapon's card; "Drop" is dimmed
             ("1795467968_on_foot", &[R1, R3, Square, Triangle, Cross], &[Circle]),
+            ("1795537583_on_foot", &[R1, Square, Triangle], &[]), // weapon wheel
+            ("1795537588_on_foot", &[R1, Square, Triangle], &[]),
+            ("1795537686_on_foot", &[Triangle], &[]), // "Open" on a car's boot, see-through in front of skin
+            ("1795537691_on_foot", &[Triangle, L1], &[Square]), // the open boot; "Storage box" is dimmed
+            ("1795537698_on_foot", &[R1, L2, R2], &[Cross]), // the wheel's items; "Put on" is dimmed
+            ("1795683052_on_foot", &[L3, R3, Cross, Circle], &[Square]), // the map; "Add marker" is dimmed. No circle on the "O" of "Ocean Beach".
+            ("1795828953_on_foot", &[L2, R2, Circle], &[]), // drilling a safe
+            // Frames with nothing to find that once gave a wrong prompt, which is why they are kept:
+            // 1795653925 and 1795663910 (the pink "R" blip on the compass and the minimap),
+            // 1795663284 (the rooster blip), 1795732513 (the "o" of a bank's sign).
         ];
         let dirs = std::env::var("PALMREST_FRAMES").expect("set PALMREST_FRAMES");
         let (mut frames, mut slowest, mut wrong) = (0, 0.0f64, 0u32);
