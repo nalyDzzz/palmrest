@@ -306,11 +306,15 @@ pub struct Found {
 const LEVELS: [u8; 4] = [225, 190, 155, 120];
 /// Inside a disc, this much darker than its face counts as part of the mark.
 const MARK_DARKER_BY: i16 = 60;
-/// Disc diameter in a 1080-line picture: smallest and largest accepted. Every prompt in the
-/// saved pictures is 25 to 31 across. The white letters of the map's place names are 18, and
-/// an "O" among them is a ring with a dark outline, which is what the circle button looks like.
-const MIN_DIAMETER: f32 = 22.0;
+/// The sides of a prompt's face in a 1080-line picture: the shortest and the longest accepted.
+/// The short ones are the badges: the R1 in the game's list of things to do is 26 by 21.
+const MIN_DIAMETER: f32 = 17.0;
 const MAX_DIAMETER: f32 = 46.0;
+/// A disc is at least this much across: every one in the saved pictures is 25 to 31. The white
+/// letters of the map's place names are 18, and an "O" among them is a ring with a dark
+/// outline, which is what the circle button looks like. (Badges are not held to this. When it
+/// was the limit for everything, that R1 of 21 went unfound.)
+const MIN_DISC: f32 = 22.0;
 /// A prompt is drawn in white, grey and black: on its face and in its mark the three colours of
 /// a pixel differ by no more than this on average. The map's blips are discs with a letter on
 /// them too, but coloured ones, and a white "o" on a coloured sign has a coloured hole for a
@@ -760,6 +764,7 @@ fn prompts_at(rgb: &[u8], lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Foun
     let mut stack: Vec<u32> = Vec::new();
     let scale = h as f32 / 1080.0;
     let (min_d, max_d) = ((MIN_DIAMETER * scale) as i32, (MAX_DIAMETER * scale).ceil() as i32);
+    let min_disc = (MIN_DISC * scale) as i32;
     // How far outside a face its rim is looked for, and how far from the picture's edge a face
     // must stay so that there is something to look at.
     let rim_out = 1.5 * scale.max(1.0);
@@ -829,7 +834,7 @@ fn prompts_at(rgb: &[u8], lum: &[u8], w: usize, h: usize, level: u8) -> Vec<Foun
             Outline::Shoulder
         } else if as_wide_as_tall && rounded(top) && square(bottom) {
             Outline::Trigger
-        } else if as_wide_as_tall && !square(top) && !square(bottom) {
+        } else if as_wide_as_tall && !square(top) && !square(bottom) && bw.min(bh) >= min_disc {
             Outline::Disc
         } else {
             continue;
@@ -1122,7 +1127,8 @@ mod tests {
     fn shoulder_and_trigger_badges_are_found_and_told_apart() {
         // At the game's own size: the letters on a badge are too fine to draw any smaller.
         let (w, h) = (1920usize, 1080usize);
-        let placed = [(Glyph::L1, 64, 62, 22), (Glyph::R1, 448, 62, 22), (Glyph::L2, 1821, 673, 26), (Glyph::R2, 1866, 673, 26), (Glyph::R2, 856, 364, 28), (Glyph::L3, 1866, 881, 26)];
+        // (The R1 that is 21 high is the one beside "Head home" in the list of things to do.)
+        let placed = [(Glyph::L1, 64, 62, 22), (Glyph::R1, 448, 62, 22), (Glyph::R1, 1866, 916, 21), (Glyph::L2, 1821, 673, 26), (Glyph::R2, 1866, 673, 26), (Glyph::R2, 856, 364, 28), (Glyph::L3, 1866, 881, 26)];
         let found = find(&picture(w, h, &placed), w, h);
         assert_eq!(found.len(), placed.len(), "{found:?}");
         for (glyph, x, y, _) in placed {
@@ -1223,7 +1229,7 @@ mod tests {
         // has a cross button on it that reads as a prompt, and the two "Restore" prompts are dimmed.
         const EVERY_BUTTON: &[Glyph] = &[L1, L1, R1, R1, L2, R2, Triangle, Square, Circle, Circle, Cross, L3, R3, R3, LeftStick, RightStick];
         const PHOTO_MODE: &[Glyph] = &[LeftStick, RightStick, Triangle, Cross, Circle, L1, R1, L2, R2, L3];
-        let expected: [(&str, &[Glyph], &[Glyph]); 34] = [
+        let expected: [(&str, &[Glyph], &[Glyph]); 36] = [
             ("1795460287_on_foot", &[Triangle], &[Square]),
             ("1795460357_on_foot", &[Circle, Cross, Square], &[]),
             ("1123_100027_should_be_drive", &[Cross], &[]),
@@ -1258,6 +1264,8 @@ mod tests {
             ("1795537698_on_foot", &[R1, L2, R2], &[Cross]), // the wheel's items; "Put on" is dimmed
             ("1795683052_on_foot", &[L3, R3, Cross, Circle], &[Square]), // the map; "Add marker" is dimmed. No circle on the "O" of "Ocean Beach".
             ("1795828953_on_foot", &[L2, R2, Circle], &[]), // drilling a safe
+            ("1795843001_driving", &[R1, Cross], &[]), // "Head home" and "Talk" on a bike: that R1 is a small one, 26 by 21
+            ("1795843005_driving", &[R1, Cross], &[]),
             // Frames with nothing to find that once gave a wrong prompt, which is why they are kept:
             // 1795653925 and 1795663910 (the pink "R" blip on the compass and the minimap),
             // 1795663284 (the rooster blip), 1795732513 (the "o" of a bank's sign).
