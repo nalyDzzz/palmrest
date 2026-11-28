@@ -143,7 +143,7 @@ The window says which controller it found, under *Controller*, and its sticks an
 
 Not carried over: rumble, the adaptive triggers, the motion sensors and swipes on the touchpad. A click on the touchpad is.
 
-This part is new and has not been played with yet. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
+This part is new. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
 
 ## Settings and pictures
 
