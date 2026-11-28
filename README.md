@@ -139,7 +139,7 @@ Some things in the game are made for two thumbs, flying most of all. Connect a D
 - While you play on the controller, the keys drawn on the game's prompts are hidden, so you can see which button the game is asking for.
 - It works with the takeover (F10) turned off too.
 
-The window says which controller it found, under *Controller*, and its sticks and buttons show in the drawing of what Palmrest sends. The controller has to be connected to the PC, not to the PS5.
+The window says which controller it found, under *Controller*, and its sticks and buttons show in the drawing of what Palmrest sends. The controller has to be connected to the PC, not to the PS5. I play with a DualSense on a cable; Bluetooth and the DualShock 4 are read the same way but nobody has tried them yet.
 
 Not carried over this way: vibration, the adaptive triggers, the motion sensors and swipes on the touchpad. A click on the touchpad is.
 
@@ -154,7 +154,7 @@ For vibration, Veyra wants the DualSense on a cable, plugged in for a little whi
 
 This is tried with Veyra only, and it leans on how Veyra picks the controller it reads.
 
-All of this is new. If it misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
+If any of this misbehaves, turn it off under *Controller* and please [open an issue](https://github.com/nalyDzzz/palmrest/issues).
 
 ## Settings and pictures
 

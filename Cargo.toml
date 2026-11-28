@@ -1,6 +1,6 @@
 [package]
 name = "palmrest"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Keyboard and mouse for GTA 6 on PS5: a virtual controller for a Remote Play client, with your keys shown on the game's button prompts."
 license = "MIT"
